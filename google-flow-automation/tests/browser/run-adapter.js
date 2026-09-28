@@ -18,50 +18,67 @@
     const check = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
     const opts = { timeoutMs: 15000, elementTimeoutMs: 5000, onProgress: (p) => logs.push(`progress: ${typeof p === 'string' ? p : JSON.stringify(p)}`) };
 
-    /** One job as the engine runs it: prompt -> wait for the video -> download. */
-    async function runJob(prompt) {
-        const pending = await adapter.submitPrompt(prompt, opts);
-        const video = await adapter.waitForVideo(pending, opts);
-        await adapter.triggerNativeDownload(video, opts);
-        return video;
+    // Same scheduling as the engine: generation one at a time; at 100% the next prompt goes,
+    // and downloads run in a background chain whose page clicks never overlap typing.
+    let pageLock = Promise.resolve();
+    const withPage = (fn) => {
+        const run = pageLock.then(fn, fn);
+        pageLock = run.catch(() => {});
+        return run;
+    };
+    let downloadChain = Promise.resolve();
+    const events = [];
+    async function runJob(prompt, n) {
+        const pending = await withPage(() => adapter.submitPrompt(prompt, opts));
+        events.push(`submit:${n}`);
+        await adapter.waitForGenerated(pending, opts);
+        events.push(`100%:${n}`);
+        downloadChain = downloadChain.then(async () => {
+            const video = await adapter.waitForVideo(pending, opts);
+            await withPage(() => adapter.triggerNativeDownload(video, opts));
+            events.push(`downloaded:${n}`);
+        });
     }
 
     try {
         const ready = adapter.checkReady();
         check('checkReady: ready + authenticated + project open', ready.ready && ready.authenticated && ready.projectOpen, ready);
 
-        const first = 'A cinematic futuristic city, neon lights, rain, 4K';
-        const video1 = await runJob(first);
-        const readyToDownload = (window.mock.downloadedAt[0] - window.mock.readyAt[0]) / 1000;
-        check('downloads within seconds of the video being ready, despite the lingering "100%" label', readyToDownload < 5, { readyToDownloadSeconds: readyToDownload });
-        check('prompt 1 submitted exactly from the main prompt box', window.mock.submissions[0]?.prompt === first, window.mock.submissions);
-        check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
-        check('script click ignored -> real click at the arrow position submitted it', window.mock.ignoredClicks === 1 && trustedCalls[0] === 'click', { ignored: window.mock.ignoredClicks, trustedCalls });
-        check('waited for the video, then downloaded it (blob -> native download)', window.mock.downloads.length === 1 && adapter.getVideoInfo(video1).isBlob, window.mock.downloads);
+        const prompts = ['A cinematic futuristic city, neon lights, rain, 4K', 'A cute robot walking through a magical forest', 'An astronaut exploring an alien planet'];
+        for (const [i, p] of prompts.entries()) await runJob(p, i + 1);
+        await downloadChain;
 
-        await new Promise((r) => setTimeout(r, 300)); // Flow opens the result viewer after job 1
-        check('(setup) Flow opened a result viewer with its own prompt box', window.mock.viewerOpened === 1 && document.querySelector('.viewer'), null);
-
-        const second = 'A cute robot walking through a magical forest';
-        await runJob(second);
-        check('viewer was closed; prompt 2 went into the SAME main prompt box', window.mock.submissions[1]?.prompt === second && window.mock.viewerSubmissions.length === 0 && !document.querySelector('.viewer'), {
-            submissions: window.mock.submissions,
+        check('all 3 prompts submitted exactly, in order, from the main prompt box', prompts.every((p, i) => window.mock.submissions[i]?.prompt === p) && window.mock.viewerSubmissions.length === 0, {
+            submissions: window.mock.submissions.map((s) => s.prompt),
             viewer: window.mock.viewerSubmissions
         });
-        check('"Show 1 Videos" was expanded and video 2 downloaded', window.mock.downloads.length === 2, window.mock.downloads);
-        check('after one ignored click, real clicks are used directly', window.mock.ignoredClicks === 1 && adapter.preferTrusted, { ignored: window.mock.ignoredClicks });
+        check('prompt 2 was sent at 100% of prompt 1, before video 1 was even downloaded', events.indexOf('submit:2') < events.indexOf('downloaded:1'), events);
+        check('each download is the video of its own prompt (no mix-ups)', window.mock.downloads.length === 3 && window.mock.downloads.every((src, i) => src === window.mock.submissions[i].src), {
+            downloads: window.mock.downloads,
+            srcs: window.mock.submissions.map((s) => s.src)
+        });
+        check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0, { decoyClicks: window.mock.decoyClicks });
+        check('script click ignored once -> real clicks used from then on', window.mock.ignoredClicks === 1 && adapter.preferTrusted && trustedCalls[0] === 'click', { ignored: window.mock.ignoredClicks, trustedCalls });
+        check('"Show 1 Videos" was expanded for the collapsed result', !/Show 1 Videos/.test(document.body.innerText), null);
+        const gaps = window.mock.downloadedAt.map((d, k) => (d - window.mock.readyAt[k]) / 1000);
+        check('downloads start within seconds of each video appearing', gaps.length === 3 && gaps.every((g) => g < 8), { gapsSeconds: gaps });
 
         // Error path: Flow shows an error toast after submit.
         window.mock.failNext = 'Something went wrong. Please try again.';
         let flowError = null;
-        await adapter.submitPrompt('third prompt', opts).then((p) => adapter.waitForVideo(p, opts)).catch((e) => (flowError = e));
+        await adapter.submitPrompt('fourth prompt', opts).then((p) => adapter.waitForGenerated(p, opts)).catch((e) => (flowError = e));
         check('Flow error toast is detected as FLOW_ERROR', flowError?.code === 'FLOW_ERROR', flowError?.message);
 
         document.querySelectorAll('[role=alert]').forEach((n) => n.remove());
         window.mock.failNext = 'This prompt violates our policy';
         let policy = null;
-        await adapter.submitPrompt('fourth prompt', opts).then((p) => adapter.waitForVideo(p, opts)).catch((e) => (policy = e));
+        await adapter.submitPrompt('fifth prompt', opts).then((p) => adapter.waitForGenerated(p, opts)).catch((e) => (policy = e));
         check('policy error is non-retryable', policy?.code === 'CONTENT_POLICY' && policy.retryable === false, policy?.message);
+
+        check('the result viewer Flow opened was closed before the next prompt, and never got a prompt', window.mock.viewerOpened === 1 && !document.querySelector('.viewer') && window.mock.viewerSubmissions.length === 0, {
+            opened: window.mock.viewerOpened,
+            viewer: window.mock.viewerSubmissions
+        });
 
         const stale = await adapter.waitForVideo({ token: 'nope' }, opts).catch((e) => e);
         check('lost state after reload -> STATE_LOST', stale.code === 'STATE_LOST', stale.message);

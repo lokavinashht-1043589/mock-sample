@@ -37,7 +37,8 @@
             this.trusted = trusted; // (action, args) => Promise: real input via the background
             this.preferTrusted = false; // set once Flow has ignored a script click
             this.refs = new Map();
-            this.pendingVideos = new Map();
+            this.pendingVideos = new Map(); // token -> { baseline, tile }
+            this.claimedVideos = new WeakSet(); // videos already handed to a job (downloads overlap generation)
             this.seq = 0;
         }
 
@@ -338,6 +339,8 @@
         snapshot() {
             const videos = [...document.querySelectorAll('video')];
             return {
+                mediaEls: new WeakSet(document.querySelectorAll('video,img')),
+                progressEls: new WeakSet(dom.findAll(this.sel('progressIndicator')).elements),
                 videoEls: new WeakSet(videos),
                 videoKeys: new Set(videos.map((el) => this.mediaKey(el)).filter(Boolean)),
                 errors: new Set(this.currentErrors()),
@@ -348,8 +351,27 @@
         newVideos(baseline) {
             return this.collectMedia('generatedVideo').filter((el) => {
                 const key = this.mediaKey(el);
-                return key && !baseline.videoEls.has(el) && !baseline.videoKeys.has(key) && !this.inOverlay(el);
+                return key && !baseline.videoEls.has(el) && !baseline.videoKeys.has(key) && !this.inOverlay(el) && !this.claimedVideos.has(el);
             });
+        }
+
+        /**
+         * The tile a new progress indicator belongs to: grow outward from it while the ancestor
+         * holds no result that existed before this prompt (so it never swallows other tiles).
+         */
+        tileOf(el, baseline) {
+            const viewportArea = window.innerWidth * window.innerHeight;
+            const hasOld = (node) =>
+                [...node.querySelectorAll('video,img')].some((m) => baseline.mediaEls.has(m)) ||
+                dom.findAll(this.sel('progressIndicator'), { root: node, visibleOnly: false }).elements.some((p) => p !== el && baseline.progressEls.has(p));
+            let node = el;
+            for (let i = 0; node.parentElement && node.parentElement !== document.body && i < 10; i++) {
+                const parent = node.parentElement;
+                const r = parent.getBoundingClientRect();
+                if (r.width * r.height > viewportArea * 0.6 || hasOld(parent)) break;
+                node = parent;
+            }
+            return node;
         }
 
         /** Nearest ancestor that looks like a result card (holds the media + its action buttons). */
@@ -446,7 +468,7 @@
         }
 
         /** Resolve once `pick()` returns the same non-empty set of finished media for STABILITY_MS. */
-        waitForStableMedia(baseline, pick, { timeout, signal, onProgress, message }) {
+        waitForStableMedia(baseline, pick, { timeout, signal, onProgress, message, root = document }) {
             let lastSignature = '';
             let stableSince = 0;
             let lastProgress = '';
@@ -464,7 +486,9 @@
                     const items = pick();
                     if (!items.length) {
                         // Flow can collapse finished videos behind a "Show N videos" button (inline, not a viewer).
-                        const show = dom.findAll(this.sel('showVideosButton')).elements.find((el) => !revealed.has(el) && !this.inOverlay(el));
+                        const show = [...dom.findAll(this.sel('showVideosButton'), { root }).elements, ...(root === document ? [] : dom.findAll(this.sel('showVideosButton')).elements)].find(
+                            (el) => !revealed.has(el) && !this.inOverlay(el)
+                        );
                         if (show) {
                             revealed.add(show);
                             this.debug(`Revealing videos: ${dom.describeElement(show)}`);
@@ -476,7 +500,7 @@
                     // but only for so long once the video is there: an indicator that never clears
                     // (unrelated tile, stuck label) must not hold the download back.
                     foundAt ||= Date.now();
-                    const busy = this.activeProgress().length > baseline.progressCount || items.some((el) => this.progressIn(this.findCard(el)) > 0);
+                    const busy = items.some((el) => this.progressIn(this.findCard(el)) > 0);
                     if (busy && Date.now() - foundAt < PROGRESS_GRACE_MS) {
                         if (!loggedBusy) {
                             loggedBusy = true;
@@ -551,28 +575,87 @@
             onProgress?.('Prompt entered');
             await this.submit(baseline, { kind: 'video', text: prompt, signal, timeout: elementTimeoutMs });
             onProgress?.('Generating video…');
+
+            // The tile this prompt's progress appears in — its video is looked for there, so a
+            // video that shows up late can't be confused with the next prompt's.
+            const fresh = await dom
+                .waitForCondition(() => dom.findAll(this.sel('progressIndicator')).elements.find((el) => !baseline.progressEls.has(el) && !this.inOverlay(el)), {
+                    timeout: 5000,
+                    signal,
+                    interval: 250
+                })
+                .catch((e) => {
+                    if (e.code === 'ABORTED') throw e;
+                    return null;
+                });
+            const tile = fresh ? this.tileOf(fresh, baseline) : null;
+            this.debug(tile ? `Tracking this prompt's tile: ${dom.describeElement(tile)}` : "No progress tile seen for this prompt; watching the whole page");
             const token = `pv-${++this.seq}`;
-            this.pendingVideos.set(token, baseline);
+            this.pendingVideos.set(token, { baseline, tile, sawProgress: Boolean(fresh) });
             return { token };
         }
 
+        pendingFor(pending) {
+            const entry = pending && this.pendingVideos.get(pending.token);
+            if (!entry) throw new FlowError('Video generation state was lost (page reloaded)', { code: 'STATE_LOST' });
+            return entry;
+        }
+
+        tileVideos(entry) {
+            if (!entry.tile?.isConnected) return this.newVideos(entry.baseline);
+            return [...entry.tile.querySelectorAll('video')].filter(
+                (el) => dom.isVisible(el) && this.mediaKey(el) && !entry.baseline.videoEls.has(el) && !this.claimedVideos.has(el) && !this.inOverlay(el)
+            );
+        }
+
+        /**
+         * Resolve as soon as THIS prompt's generation reaches 100% (or its video is there) —
+         * the moment the next prompt may be sent. The download is handled separately.
+         */
+        waitForGenerated(pending, { timeoutMs = 600000, signal, onProgress } = {}) {
+            const entry = this.pendingFor(pending);
+            let lastProgress = '';
+            return dom.waitForCondition(
+                () => {
+                    this.throwIfFlowError(entry.baseline);
+                    if (this.tileVideos(entry).length) return 'video';
+                    const indicators = entry.tile?.isConnected
+                        ? dom.findAll(this.sel('progressIndicator'), { root: entry.tile, visibleOnly: false }).elements
+                        : this.activeProgress().filter((el) => !entry.baseline.progressEls.has(el));
+                    const values = indicators.map((el) => this.progressValue(el));
+                    const shown = values.filter((v) => v !== null);
+                    if (shown.length) {
+                        const text = `${Math.round(Math.min(...shown))}%`;
+                        if (text !== lastProgress) {
+                            lastProgress = text;
+                            onProgress?.(`Generating video… progress ${text}`);
+                        }
+                    }
+                    if (indicators.length) {
+                        entry.sawProgress = true;
+                        return shown.length === indicators.length && shown.every((v) => v >= 100) ? '100%' : false;
+                    }
+                    return entry.sawProgress ? 'progress-cleared' : false;
+                },
+                { timeout: timeoutMs, signal, interval: 1000, message: 'Video generation timed out (progress never reached 100%)' }
+            );
+        }
+
+        /** Find THIS prompt's finished video (in its tile). Runs in the background, after 100%. */
         async waitForVideo(pending, { timeoutMs = 600000, signal, onProgress } = {}) {
-            const baseline = pending && this.pendingVideos.get(pending.token);
-            if (!baseline) throw new FlowError('Video generation state was lost (page reloaded)', { code: 'STATE_LOST' });
-            const videos = await this.waitForStableMedia(baseline, () => this.newVideos(baseline), {
+            const entry = this.pendingFor(pending);
+            const videos = await this.waitForStableMedia(entry.baseline, () => this.tileVideos(entry), {
                 timeout: timeoutMs,
                 signal,
+                root: entry.tile?.isConnected ? entry.tile : document,
                 onProgress: (p) => onProgress?.(`Generating video… ${p}`),
-                message: 'Video generation timed out'
+                message: 'The finished video did not appear on the page'
             });
             this.pendingVideos.delete(pending.token);
             const video = videos[0];
+            this.claimedVideos.add(video);
             this.debug(`New video: ${dom.describeElement(video)} src=${this.mediaKey(video).slice(0, 80)}`);
             return { ref: this.register(video, 'video'), count: videos.length };
-        }
-
-        getLatestGeneratedVideo(baseline) {
-            return this.newVideos(baseline)[0] || null;
         }
 
         getVideoInfo(videoRef) {

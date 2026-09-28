@@ -34,6 +34,10 @@ export class RemoteFlowAdapter {
         return this.connection.command(COMMANDS.SUBMIT_PROMPT, { prompt, elementTimeoutMs }, { signal, timeoutMs: 4 * elementTimeoutMs, onProgress });
     }
 
+    async waitForGenerated(video, { signal, timeoutMs, onProgress } = {}) {
+        return this.connection.command(COMMANDS.WAIT_FOR_GENERATED, { video, timeoutMs }, { signal, timeoutMs, onProgress });
+    }
+
     async waitForVideo(video, { signal, timeoutMs, onProgress } = {}) {
         return this.connection.command(COMMANDS.WAIT_FOR_VIDEO, { video, timeoutMs }, { signal, timeoutMs, onProgress });
     }

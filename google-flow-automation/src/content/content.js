@@ -103,6 +103,8 @@
                 return { ...adapter.diagnose(), selectorError };
             case 'SUBMIT_PROMPT':
                 return adapter.submitPrompt(args.prompt, opts);
+            case 'WAIT_FOR_GENERATED':
+                return adapter.waitForGenerated(args.video, opts);
             case 'WAIT_FOR_VIDEO':
                 return adapter.waitForVideo(args.video, opts);
             case 'GET_VIDEO_INFO':

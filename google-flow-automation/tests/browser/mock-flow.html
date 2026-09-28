@@ -16,6 +16,7 @@
           the DOM) — prompts must never go there
         - later results can be collapsed behind an inline "Show 1 Videos" button
         - a finished tile keeps its "100%" progress label on screen for a while
+        - the next prompt is accepted at 100%; the playable video appears ~3s later in the same tile
     -->
     <style>
         body { font: 14px system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
@@ -168,8 +169,13 @@
                 return;
             }
             setTimeout(async () => {
+                // 100%: Flow accepts the next prompt now; the playable video only shows up later.
                 done();
+                window.mock.busy = false;
+                syncCreate();
+                await new Promise((r) => setTimeout(r, 3000));
                 const src = await videoBlobUrl();
+                window.mock.submissions[index].src = src;
                 if (index === 1) {
                     // Collapsed result: an inline toggle reveals the clip.
                     const show = document.createElement('button');
@@ -179,8 +185,6 @@
                 } else {
                     addVideo(card, src);
                 }
-                window.mock.busy = false;
-                syncCreate();
                 if (index === 0) setTimeout(() => openViewer(src), 100); // Flow opens the new result
             }, 1500);
         });

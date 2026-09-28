@@ -53,6 +53,17 @@ export class MockFlowAdapter {
             this.active--;
         }
     }
+    // `active`/`maxActive` track generations in flight (submit + waitForGenerated); must stay 1.
+
+    async waitForGenerated(pending, { signal } = {}) {
+        this.active++;
+        this.maxActive = Math.max(this.maxActive, this.active);
+        try {
+            await this.step('waitForGenerated', pending.prompt, signal);
+        } finally {
+            this.active--;
+        }
+    }
 
     async waitForVideo(pending, { signal } = {}) {
         await this.step('waitForVideo', pending.prompt, signal);

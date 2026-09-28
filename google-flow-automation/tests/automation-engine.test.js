@@ -42,7 +42,7 @@ async function runToEnd(engine) {
     await engine.whenIdle();
 }
 
-test('processes all jobs sequentially, in order, never two at once, names files by number', async () => {
+test('generates one prompt at a time, in order, and names files by number', async () => {
     const { engine, stateManager, adapter, events } = await setup({ text: '1] A\n2] B\n10] C' });
     await runToEnd(engine);
 
@@ -53,11 +53,14 @@ test('processes all jobs sequentially, in order, never two at once, names files 
     ]);
     assert.equal(adapter.maxActive, 1);
     const steps = adapter.calls.filter((c) => c !== 'checkReady');
-    assert.deepEqual(steps, [
-        'submitPrompt:A', 'waitForVideo:A', 'getVideoDownloadInfo:A',
-        'submitPrompt:B', 'waitForVideo:B', 'getVideoDownloadInfo:B',
-        'submitPrompt:C', 'waitForVideo:C', 'getVideoDownloadInfo:C'
-    ]);
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['A', 'B', 'C']);
+    for (const p of ['A', 'B', 'C']) {
+        const mine = steps.filter((s) => s.endsWith(`:${p}`));
+        assert.deepEqual(mine, [`submitPrompt:${p}`, `waitForGenerated:${p}`, `waitForVideo:${p}`, `getVideoDownloadInfo:${p}`]);
+    }
+    // the next prompt is only typed once the previous one reached 100%
+    assert.ok(steps.indexOf('waitForGenerated:A') < steps.indexOf('submitPrompt:B'));
+    assert.ok(steps.indexOf('waitForGenerated:B') < steps.indexOf('submitPrompt:C'));
     assert.equal(stateManager.get().runStatus, RUN_STATUS.COMPLETED);
     assert.deepEqual(stateManager.get().summary.files, ['1.mp4', '2.mp4', '10.mp4']);
     assert.ok(events.some((e) => e.type === 'DOWNLOAD_COMPLETED' && e.number === 10));
@@ -70,7 +73,7 @@ test('prompt is passed to Flow exactly, without the number prefix', async () => 
     assert.deepEqual(adapter.promptsFor('submitPrompt'), ['A highly detailed cinematic shot of a futuristic city, neon lights, rain, 4K']);
 });
 
-test('job 2 does not start until job 1 download has completed', async () => {
+test('the next prompt starts at 100% while the previous download runs in the background', async () => {
     const order = [];
     const downloads = new FakeDownloads({ completeDelayMs: 30 });
     const origEmit = downloads.emit.bind(downloads);
@@ -81,15 +84,15 @@ test('job 2 does not start until job 1 download has completed', async () => {
     const adapter = new MockFlowAdapter({ onStep: (name, prompt) => name === 'submitPrompt' && order.push(`start:${prompt}`) });
     const { engine } = await setup({ text: '1] A\n2] B', adapter, downloads });
     await runToEnd(engine);
-    assert.deepEqual(order, ['start:A', 'downloaded:1', 'start:B', 'downloaded:2']);
+    assert.deepEqual(order, ['start:A', 'start:B', 'downloaded:1', 'downloaded:2']);
 });
 
-test('retries a failing step and succeeds (retryCount recorded)', async () => {
+test('a failing download is retried without regenerating the video (retryCount recorded)', async () => {
     const adapter = new MockFlowAdapter({ failures: { waitForVideo: [new Error('Video generation timed out'), new Error('Video generation timed out')] } });
     const { engine, stateManager } = await setup({ text: '1] A\n2] B', adapter });
     await runToEnd(engine);
     assert.deepEqual(jobsOf(stateManager)[0], { n: 1, status: 'completed', file: '1.mp4', retries: 2 });
-    assert.equal(adapter.promptsFor('submitPrompt').filter((p) => p === 'A').length, 3);
+    assert.equal(adapter.promptsFor('submitPrompt').filter((p) => p === 'A').length, 1);
 });
 
 test('after max retries the job fails, error is stored, and the queue continues', async () => {

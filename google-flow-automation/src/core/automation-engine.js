@@ -36,14 +36,17 @@ export const AUTH_MESSAGE =
  * Central state machine. Talks to Google Flow ONLY through `adapter`, which must implement:
  *   checkReady()                          -> { ready, authenticated, projectOpen?, reason? }
  *   submitPrompt(prompt, opts)            -> pendingVideoRef  (types into the project's main prompt box)
+ *   waitForGenerated(pendingVideoRef, opts) -> void           (this prompt's progress reached 100%)
  *   waitForVideo(pendingVideoRef, opts)   -> videoRef
  *   getVideoDownloadInfo(videoRef, opts)  -> { url, mimeHint? }
  *   triggerNativeDownload(videoRef, opts) -> void   (clicks Flow's own download button)
  *   abort()                               -> void
  * (see tests/mocks/mock-flow-adapter.js and src/background/remote-flow-adapter.js)
  *
- *   PENDING -> GENERATING_VIDEO -> VIDEO_READY -> DOWNLOADING -> COMPLETED -> next job
- *   (one prompt at a time: the next prompt is only typed after this one's video is downloaded)
+ *   PENDING -> GENERATING_VIDEO --(100%)--> DOWNLOADING -> COMPLETED
+ *   Generation is one prompt at a time; as soon as a prompt reaches 100% the next one is typed.
+ *   Downloads run in a background queue (one at a time, in order) that overlaps generation, and
+ *   their page clicks never interleave with typing a prompt (see withPage).
  *   any state -> error -> retry (up to maxRetries) -> FAILED -> next job
  */
 export class FlowAutomationEngine {
@@ -59,6 +62,8 @@ export class FlowAutomationEngine {
         this.retryBackoffMs = retryBackoffMs;
 
         this.loopPromise = null;
+        this.downloadChain = Promise.resolve(); // background downloads, strictly one after another
+        this.pageLock = Promise.resolve(); // serialises page interactions (typing vs. download clicks)
         this.pauseRequested = false;
         this.stopRequested = false;
         this.abortController = null;
@@ -191,6 +196,7 @@ export class FlowAutomationEngine {
             for (;;) {
                 if (this.stopRequested) break;
                 if (this.pauseRequested) {
+                    await this.drainDownloads();
                     await this.state.update({ runStatus: RUN_STATUS.PAUSED, currentJobNumber: null, statusMessage: 'Paused' });
                     this.logger.info('Automation paused');
                     return;
@@ -211,6 +217,7 @@ export class FlowAutomationEngine {
                 needDelay = true;
             }
 
+            await this.drainDownloads();
             if (this.stopRequested) {
                 await this.state.update({ runStatus: RUN_STATUS.STOPPED, currentJobNumber: null, statusMessage: 'Stopped' });
                 this.logger.info('Automation stopped');
@@ -218,6 +225,7 @@ export class FlowAutomationEngine {
             }
             await this.finish();
         } catch (error) {
+            await this.drainDownloads();
             if (isAbortError(error) || this.stopRequested) {
                 await this.state.update({ runStatus: RUN_STATUS.STOPPED, currentJobNumber: null, statusMessage: 'Stopped' });
                 this.logger.info('Automation stopped');
@@ -358,15 +366,71 @@ export class FlowAutomationEngine {
         this.emit('JOB_STARTED', { number: n });
         await this.setJobStatus(n, JOB_STATUS.GENERATING_VIDEO, { startedAt: Date.now(), error: null });
 
-        const pendingVideo = await this.submitPrompt(job);
-        const video = await this.waitForVideo(job, pendingVideo);
-        await this.setJobStatus(n, JOB_STATUS.VIDEO_READY);
+        const pendingVideo = await this.withPage(() => this.submitPrompt(job));
+        await this.waitForGenerated(job, pendingVideo);
 
-        const result = await this.downloadVideo(job, video);
-        await this.state.updateJob(n, { status: JOB_STATUS.COMPLETED, outputFile: result.filename, error: null, finishedAt: Date.now() });
-        this.logger.info(`Saved: ${result.filename}`);
-        this.logger.info(`Job ${n} completed`);
-        this.emit('JOB_COMPLETED', { number: n, outputFile: result.filename });
+        // 100%: the next prompt can go now; this job's download finishes in the background.
+        await this.state.updateJob(n, { status: JOB_STATUS.DOWNLOADING });
+        this.emit('JOB_PROGRESS', { number: n, status: JOB_STATUS.DOWNLOADING });
+        this.queueDownload(this.state.getJob(n), pendingVideo);
+    }
+
+    /** Run page interactions one at a time, so a download click never lands mid-typing. */
+    withPage(fn) {
+        const run = this.pageLock.then(fn, fn);
+        this.pageLock = run.catch(() => {});
+        return run;
+    }
+
+    queueDownload(job, pendingVideo) {
+        this.logger.info(`Job ${job.number}: queued for download (next prompt can start)`);
+        this.downloadChain = this.downloadChain.then(() => this.finishInBackground(job, pendingVideo)).catch(() => {});
+    }
+
+    /** Wait until every queued background download has finished (or failed). */
+    async drainDownloads() {
+        let chain;
+        do {
+            chain = this.downloadChain;
+            await chain;
+        } while (chain !== this.downloadChain);
+    }
+
+    /** Background part of a job: find its finished video, download it, complete the job. */
+    async finishInBackground(job, pendingVideo) {
+        const n = job.number;
+        const { maxRetries } = this.getSettings();
+        for (let attempt = 0; ; attempt++) {
+            // Queued behind other downloads: after Stop, don't start this one at all.
+            if (this.stopRequested || this.abortController?.signal.aborted) {
+                await this.state.updateJob(n, (j) => ({ ...resetJob(j, { keepRetries: true }), error: 'Stopped before the download finished' }));
+                return;
+            }
+            try {
+                const video = await this.waitForVideo(job, pendingVideo);
+                const result = await this.downloadVideo(job, video);
+                await this.state.updateJob(n, { status: JOB_STATUS.COMPLETED, outputFile: result.filename, error: null, finishedAt: Date.now() });
+                this.logger.info(`Saved: ${result.filename}`);
+                this.logger.info(`Job ${n} completed`);
+                this.emit('JOB_COMPLETED', { number: n, outputFile: result.filename });
+                return;
+            } catch (error) {
+                if (isAbortError(error) || this.stopRequested) {
+                    await this.state.updateJob(n, (j) => ({ ...resetJob(j, { keepRetries: true }), error: 'Stopped before the download finished' }));
+                    return;
+                }
+                const message = error.message || String(error);
+                // The video was already generated: retry only the download, never regenerate here.
+                if (error.retryable !== false && error.code !== 'STATE_LOST' && attempt < maxRetries) {
+                    this.logger.warn(`Job ${n}: download error (${message}) — retrying the download`);
+                    await this.state.updateJob(n, (j) => ({ retryCount: j.retryCount + 1, error: message }));
+                    await this.sleep(this.retryBackoffMs, this.abortController?.signal).catch(() => {});
+                    continue;
+                }
+                await this.failJob(n, message);
+                return;
+            }
+        }
     }
 
     async submitPrompt(job) {
@@ -381,29 +445,37 @@ export class FlowAutomationEngine {
         return pending;
     }
 
+    async waitForGenerated(job, pendingVideo) {
+        const settings = this.getSettings();
+        await this.adapter.waitForGenerated(pendingVideo, {
+            signal: this.abortController?.signal,
+            timeoutMs: settings.videoGenerationTimeoutMs,
+            onProgress: (detail) => this.progress(job.number, detail)
+        });
+        this.logger.info(`Job ${job.number}: video generation completed (100%)`);
+    }
+
     async waitForVideo(job, pendingVideo) {
         const settings = this.getSettings();
+        // Background: no onProgress, so the status line keeps showing the prompt being generated.
         const video = await this.adapter.waitForVideo(pendingVideo, {
             signal: this.abortController?.signal,
             timeoutMs: settings.videoGenerationTimeoutMs,
-            elementTimeoutMs: settings.elementTimeoutMs,
-            onProgress: (detail) => this.progress(job.number, detail)
+            elementTimeoutMs: settings.elementTimeoutMs
         });
         if (!video) throw new Error('Generated video not found');
-        this.logger.info(`Job ${job.number}: video generation completed`);
         return video;
     }
 
     async downloadVideo(job, video) {
         const settings = this.getSettings();
         const signal = this.abortController?.signal;
-        await this.setJobStatus(job.number, JOB_STATUS.DOWNLOADING);
         const info = await this.adapter.getVideoDownloadInfo(video, { signal, elementTimeoutMs: settings.elementTimeoutMs });
         this.logger.info(`Job ${job.number}: download started`);
         return this.downloads.downloadVideo(info, job, {
             signal,
             timeoutMs: settings.downloadTimeoutMs,
-            triggerNativeDownload: () => this.adapter.triggerNativeDownload(video, { signal, elementTimeoutMs: settings.elementTimeoutMs }),
+            triggerNativeDownload: () => this.withPage(() => this.adapter.triggerNativeDownload(video, { signal, elementTimeoutMs: settings.elementTimeoutMs })),
             onStarted: async ({ downloadId }) => {
                 await this.state.updateJob(job.number, { downloadId });
                 this.emit('DOWNLOAD_STARTED', { number: job.number, downloadId });
