@@ -15,6 +15,7 @@
         - after the first video, a result viewer opens with ITS OWN prompt box (placed first in
           the DOM) — prompts must never go there
         - later results can be collapsed behind an inline "Show 1 Videos" button
+        - a finished tile keeps its "100%" progress label on screen for a while
     -->
     <style>
         body { font: 14px system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
@@ -56,7 +57,7 @@
         const grid = document.getElementById('grid');
         const input = document.querySelector('.composer textarea');
         const createBtn = document.getElementById('create');
-        window.mock = { submissions: [], viewerSubmissions: [], downloads: [], failNext: null, decoyClicks: 0, ignoredClicks: 0, busy: false, realClick: false, viewerOpened: 0 };
+        window.mock = { submissions: [], viewerSubmissions: [], downloads: [], failNext: null, decoyClicks: 0, ignoredClicks: 0, busy: false, realClick: false, viewerOpened: 0, readyAt: [], downloadedAt: [] };
         for (const id of ['decoy', 'addMedia', 'frames', 'settings']) document.getElementById(id).addEventListener('click', () => window.mock.decoyClicks++);
 
         // The app only enables Create once its own state has seen the text (a beat after input).
@@ -78,7 +79,14 @@
                 bar.setAttribute('aria-valuenow', String(pct));
                 bar.textContent = `${pct}%`;
             }, 250);
-            return { card, done: () => (clearInterval(timer), bar.remove()) };
+            // Like Flow: the finished tile keeps showing "100%" for a while after the video is ready.
+            const done = () => {
+                clearInterval(timer);
+                bar.setAttribute('aria-valuenow', '100');
+                bar.textContent = '100%';
+                setTimeout(() => bar.remove(), 30000);
+            };
+            return { card, done };
         }
 
         async function videoBlobUrl() {
@@ -108,6 +116,7 @@
             v.muted = true;
             v.src = src;
             card.append(v);
+            window.mock.readyAt.push(Date.now());
             const dl = document.createElement('button');
             dl.className = 'css-only'; // revealed only by CSS :hover
             dl.setAttribute('aria-label', 'Download');
@@ -120,7 +129,7 @@
                 const item = document.createElement('div');
                 item.setAttribute('role', 'menuitem');
                 item.textContent = 'Original size (720p)';
-                item.addEventListener('click', () => { window.mock.downloads.push(v.src); menu.remove(); });
+                item.addEventListener('click', () => { window.mock.downloads.push(v.src); window.mock.downloadedAt.push(Date.now()); menu.remove(); });
                 menu.append(item);
                 document.body.append(menu);
             });

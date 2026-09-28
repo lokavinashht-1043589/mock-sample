@@ -32,6 +32,8 @@
 
         const first = 'A cinematic futuristic city, neon lights, rain, 4K';
         const video1 = await runJob(first);
+        const readyToDownload = (window.mock.downloadedAt[0] - window.mock.readyAt[0]) / 1000;
+        check('downloads within seconds of the video being ready, despite the lingering "100%" label', readyToDownload < 5, { readyToDownloadSeconds: readyToDownload });
         check('prompt 1 submitted exactly from the main prompt box', window.mock.submissions[0]?.prompt === first, window.mock.submissions);
         check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
         check('script click ignored -> real click at the arrow position submitted it', window.mock.ignoredClicks === 1 && trustedCalls[0] === 'click', { ignored: window.mock.ignoredClicks, trustedCalls });

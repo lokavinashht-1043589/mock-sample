@@ -13,6 +13,7 @@
     const POLICY_PATTERN = '(policy|violat|not allowed|unsafe|prohibited|guidelines)';
     const QUOTA_PATTERN = '(quota|limit reached|daily limit|rate limit|too many requests|out of credits|insufficient credits|no credits)';
     const STABILITY_MS = 2000;
+    const PROGRESS_GRACE_MS = 45000; // max wait for a lingering progress indicator once the video is there
 
     class FlowError extends Error {
         constructor(message, { code = 'FLOW_ERROR', retryable = true } = {}) {
@@ -340,7 +341,7 @@
                 videoEls: new WeakSet(videos),
                 videoKeys: new Set(videos.map((el) => this.mediaKey(el)).filter(Boolean)),
                 errors: new Set(this.currentErrors()),
-                progressCount: dom.findAll(this.sel('progressIndicator')).elements.length
+                progressCount: this.activeProgress().length
             };
         }
 
@@ -369,8 +370,30 @@
             return el.parentElement || el;
         }
 
+        /** Progress value 0–100 shown by an indicator, or null if it shows none. */
+        progressValue(el) {
+            const now = Number(el.getAttribute('aria-valuenow'));
+            if (el.hasAttribute('aria-valuenow') && Number.isFinite(now)) {
+                const max = Number(el.getAttribute('aria-valuemax')) || 100;
+                return (now / max) * 100;
+            }
+            const match = (el.innerText || el.textContent || '').match(/(\d{1,3})\s*%/);
+            return match ? Number(match[1]) : null;
+        }
+
+        /**
+         * Indicators of work still in progress. Flow leaves a finished tile's "100%" label on
+         * screen for a while; counting it made the run wait long after the video was done.
+         */
+        activeProgress(root = document) {
+            return dom.findAll(this.sel('progressIndicator'), { root }).elements.filter((el) => {
+                const value = this.progressValue(el);
+                return value === null || value < 100;
+            });
+        }
+
         progressIn(root) {
-            return dom.findAll(this.sel('progressIndicator'), { root }).elements.length;
+            return this.activeProgress(root).length;
         }
 
         currentErrors() {
@@ -409,7 +432,7 @@
             return dom.waitForCondition(
                 () => {
                     this.throwIfFlowError(baseline);
-                    if (dom.findAll(this.sel('progressIndicator')).elements.length > baseline.progressCount) return 'progress';
+                    if (this.activeProgress().length > baseline.progressCount) return 'progress';
                     if (kind === 'video' && this.newVideos(baseline).length) return 'result';
                     if (button && (!button.isConnected || !dom.isEnabled(button))) return 'generate-disabled';
                     if (promptSet) {
@@ -427,6 +450,8 @@
             let lastSignature = '';
             let stableSince = 0;
             let lastProgress = '';
+            let foundAt = 0;
+            let loggedBusy = false;
             const revealed = new WeakSet();
             return dom.waitForCondition(
                 () => {
@@ -447,10 +472,21 @@
                         }
                         return false;
                     }
-                    // Still generating somewhere on the page (e.g. more clips of this prompt)?
-                    if (dom.findAll(this.sel('progressIndicator')).elements.length > baseline.progressCount || items.some((el) => this.progressIn(this.findCard(el)) > 0)) {
+                    // Still generating (more clips of this prompt, or this tile not finished)? Wait,
+                    // but only for so long once the video is there: an indicator that never clears
+                    // (unrelated tile, stuck label) must not hold the download back.
+                    foundAt ||= Date.now();
+                    const busy = this.activeProgress().length > baseline.progressCount || items.some((el) => this.progressIn(this.findCard(el)) > 0);
+                    if (busy && Date.now() - foundAt < PROGRESS_GRACE_MS) {
+                        if (!loggedBusy) {
+                            loggedBusy = true;
+                            this.debug('Video is on the page; waiting for Flow to finish its progress indicator');
+                        }
                         stableSince = 0;
                         return false;
+                    }
+                    if (busy && Date.now() - foundAt >= PROGRESS_GRACE_MS && stableSince === 0) {
+                        this.log('warn', `A progress indicator is still showing ${Math.round(PROGRESS_GRACE_MS / 1000)}s after the video appeared; downloading anyway`);
                     }
                     const signature = items.map((el) => this.mediaKey(el)).join('|');
                     if (signature !== lastSignature) {
