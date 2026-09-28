@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flow Automation",
+  "version": "1.0.0",
+  "description": "Paste numbered prompts once; each one runs through Google Flow (image, animate, video) and downloads as <number>.mp4.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "downloads", "scripting"],
+  "host_permissions": ["https://flow.google.com/*", "https://labs.google/fx/*"],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Google Flow Automation",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "src/options/options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://flow.google.com/*", "https://labs.google/fx/*"],
+      "js": [
+        "src/content/selectors.js",
+        "src/content/dom-utils.js",
+        "src/content/flow-adapter.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "google-flow-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome Extension (MV3) that runs a numbered prompt list through Google Flow: image -> animate -> video -> download as <number>.mp4",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "check": "node scripts/check.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Google Flow Automation — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+    <main>
+        <header>
+            <h1>Google Flow Automation — Settings</h1>
+            <p class="muted">Saved to <code>chrome.storage.local</code>. Changes apply to the next step of a running job.</p>
+        </header>
+
+        <form id="form" novalidate>
+            <fieldset>
+                <legend>Google Flow</legend>
+                <label>Google Flow URL
+                    <input type="url" id="flowUrl" required />
+                    <small>Opened when no Flow tab exists. Must be on <code>flow.google.com</code> or <code>labs.google/fx</code> (the extension's host permissions).</small>
+                </label>
+                <label>Animation step prompt
+                    <select id="animationPromptMode">
+                        <option value="reuse">Reuse the job's prompt (unchanged)</option>
+                        <option value="empty">Leave the prompt box empty</option>
+                    </select>
+                    <small>Only used if Flow asks for a prompt after "Animate".</small>
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>Retries &amp; timeouts</legend>
+                <div class="grid">
+                    <label>Maximum retries <input type="number" id="maxRetries" min="0" max="10" step="1" /></label>
+                    <label>Delay between jobs (seconds) <input type="number" id="delayBetweenJobs" min="0" max="3600" step="1" /></label>
+                    <label>Image generation timeout (minutes) <input type="number" id="imageTimeout" min="0.5" max="60" step="0.5" /></label>
+                    <label>Video generation timeout (minutes) <input type="number" id="videoTimeout" min="0.5" max="120" step="0.5" /></label>
+                    <label>Download timeout (minutes) <input type="number" id="downloadTimeout" min="0.5" max="60" step="0.5" /></label>
+                    <label>Element timeout (seconds) <input type="number" id="elementTimeout" min="1" max="600" step="1" /></label>
+                </div>
+                <small>Completion is detected from the page; timeouts are only upper bounds.</small>
+            </fieldset>
+
+            <fieldset>
+                <legend>Output files</legend>
+                <div class="grid">
+                    <label>Filename prefix <input type="text" id="filenamePrefix" placeholder="(empty)" maxlength="60" /></label>
+                    <label>Download subfolder <input type="text" id="downloadSubfolder" placeholder="(Downloads root)" maxlength="120" /></label>
+                </div>
+                <p class="preview">Example output: <code id="filenamePreview">1.mp4</code></p>
+                <div class="radio-group" role="radiogroup" aria-label="Duplicate file behavior">
+                    <span class="group-label">Duplicate file behavior</span>
+                    <label class="inline"><input type="radio" name="duplicateBehavior" value="prevent" /> Prevent overwrite <small>(job fails before generating if the file exists)</small></label>
+                    <label class="inline"><input type="radio" name="duplicateBehavior" value="suffix" /> Add suffix <small>(1.mp4 → 1_1.mp4, 1_2.mp4)</small></label>
+                    <label class="inline"><input type="radio" name="duplicateBehavior" value="overwrite" /> Overwrite</label>
+                </div>
+                <small>Chrome can only see files it downloaded itself. If an unknown file with the same name exists, Chrome still won't overwrite it — it saves "1 (1).mp4" and the log says so.</small>
+            </fieldset>
+
+            <fieldset>
+                <legend>Behaviour</legend>
+                <label class="inline"><input type="checkbox" id="autoResume" /> Auto Resume <small>— after a browser/extension restart, continue an interrupted queue automatically. Off = the queue is restored but waits for you to press Resume.</small></label>
+                <label class="inline"><input type="checkbox" id="debugMode" /> Debug Mode <small>— log selectors tried, elements found, DOM/generation/download state.</small></label>
+            </fieldset>
+
+            <fieldset>
+                <legend>Selector overrides (advanced)</legend>
+                <p class="muted">JSON object: <code>{ "selectorKey": [ strategies… ] }</code>. Each key you list replaces the built-in strategies for that key (see <code>src/content/selectors.js</code> and README). Leave empty to use defaults.</p>
+                <textarea id="selectorOverrides" rows="8" spellcheck="false" placeholder='{ "animateButton": [ { "aria": "^Animate$" } ] }'></textarea>
+                <div class="row">
+                    <button type="button" id="btnExample" class="btn ghost">Insert example</button>
+                    <span id="overrideStatus" class="muted"></span>
+                </div>
+            </fieldset>
+
+            <div class="actions">
+                <button type="submit" class="btn primary">Save settings</button>
+                <button type="button" id="btnDefaults" class="btn ghost">Restore defaults</button>
+                <span id="saveStatus" class="muted" aria-live="polite"></span>
+            </div>
+        </form>
+    </main>
+    <script type="module" src="options.js"></script>
+</body>
+</html>

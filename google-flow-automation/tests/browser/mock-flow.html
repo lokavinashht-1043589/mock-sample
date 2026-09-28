@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Mock Flow (adapter harness)</title>
+    <!--
+      A STAND-IN for Google Flow, used to exercise the real content-script code
+      (selectors.js, dom-utils.js, flow-adapter.js) in a browser. It is modelled on the
+      *assumed* Flow UI — passing here proves the adapter logic works, NOT that the
+      selectors match the real Flow. Use Flow Diagnostics on the real site for that.
+    -->
+    <style>
+        body { font: 14px system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+        main { padding: 16px; display: grid; grid-template-columns: repeat(auto-fill, 280px); gap: 12px; min-height: 60vh; }
+        .card { position: relative; width: 280px; height: 200px; background: #222; border-radius: 10px; overflow: hidden; display: grid; place-items: center; }
+        .card img, .card video { width: 100%; height: 100%; object-fit: cover; }
+        .card .actions { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; }
+        .card.hover .actions { display: flex; }
+        .card:hover .css-only { display: flex; }
+        .card .css-only { position: absolute; bottom: 6px; right: 6px; display: none; }
+        .composer { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px; background: #1a1a1a; display: flex; gap: 8px; align-items: center; }
+        .composer textarea { flex: 1; height: 48px; }
+        .frame { width: 48px; height: 48px; border-radius: 6px; background-size: cover; display: none; }
+        .menu { position: fixed; background: #333; padding: 4px; border-radius: 8px; }
+        button { font: inherit; }
+        .mode { padding: 6px 10px; }
+    </style>
+</head>
+<body>
+    <header style="padding: 8px 16px">
+        <a href="#" aria-label="Google Account" style="color:#9cf">Account</a>
+        <button class="mode" role="combobox" aria-label="Mode: Text to Video" id="mode">Text to Video</button>
+    </header>
+    <main id="grid">
+        <div class="card"><img alt="old result" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='200'><rect width='280' height='200' fill='%23444'/></svg>" /></div>
+    </main>
+    <div class="composer">
+        <div class="frame" id="frame"></div>
+        <textarea id="PINHOLE_TEXT_AREA_ELEMENT_ID" placeholder="What do you want to create?"></textarea>
+        <button id="create" aria-label="Create"><i>arrow_forward</i></button>
+    </div>
+
+    <script>
+        // ---- mock app behaviour -------------------------------------------------
+        const grid = document.getElementById('grid');
+        const input = document.getElementById('PINHOLE_TEXT_AREA_ELEMENT_ID');
+        const createBtn = document.getElementById('create');
+        const modeBtn = document.getElementById('mode');
+        const frame = document.getElementById('frame');
+        window.mock = { submissions: [], mode: 'Text to Video', downloads: [], startFrame: null, failNext: null };
+
+        modeBtn.addEventListener('click', () => {
+            const menu = document.createElement('div');
+            menu.className = 'menu';
+            menu.style.top = '40px';
+            menu.style.left = '16px';
+            for (const name of ['Text to Video', 'Frames to Video', 'Create Image']) {
+                const opt = document.createElement('div');
+                opt.setAttribute('role', 'option');
+                opt.textContent = name;
+                opt.addEventListener('click', () => {
+                    window.mock.mode = name;
+                    modeBtn.textContent = name;
+                    modeBtn.setAttribute('aria-label', `Mode: ${name}`);
+                    menu.remove();
+                });
+                menu.append(opt);
+            }
+            document.body.append(menu);
+        });
+
+        function progressCard() {
+            const card = document.createElement('div');
+            card.className = 'card';
+            const bar = document.createElement('div');
+            bar.setAttribute('role', 'progressbar');
+            bar.setAttribute('aria-valuenow', '0');
+            bar.textContent = '0%';
+            card.append(bar);
+            grid.prepend(card);
+            let pct = 0;
+            const timer = setInterval(() => {
+                pct = Math.min(99, pct + 25);
+                bar.setAttribute('aria-valuenow', String(pct));
+                bar.textContent = `${pct}%`;
+            }, 250);
+            return { card, done: () => (clearInterval(timer), bar.remove()) };
+        }
+
+        function addHover(card) {
+            card.addEventListener('mouseover', () => card.classList.add('hover'));
+            card.addEventListener('mouseleave', () => card.classList.remove('hover'));
+        }
+
+        function imageUrl(text) {
+            const c = document.createElement('canvas');
+            c.width = 280; c.height = 200;
+            const g = c.getContext('2d');
+            g.fillStyle = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
+            g.fillRect(0, 0, 280, 200);
+            g.fillStyle = '#fff';
+            g.fillText(text.slice(0, 40), 10, 100);
+            return c.toDataURL('image/png');
+        }
+
+        async function videoBlobUrl() {
+            const c = document.createElement('canvas');
+            c.width = 160; c.height = 120;
+            const g = c.getContext('2d');
+            const rec = new MediaRecorder(c.captureStream(10), { mimeType: 'video/webm' });
+            const chunks = [];
+            rec.ondataavailable = (e) => chunks.push(e.data);
+            rec.start();
+            for (let i = 0; i < 5; i++) { g.fillStyle = `hsl(${i * 60},70%,50%)`; g.fillRect(0, 0, 160, 120); await new Promise((r) => setTimeout(r, 60)); }
+            rec.stop();
+            await new Promise((r) => (rec.onstop = r));
+            return URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+        }
+
+        function toast(text) {
+            const t = document.createElement('div');
+            t.setAttribute('role', 'alert');
+            t.textContent = text;
+            t.style.cssText = 'position:fixed;top:8px;left:50%;background:#822;padding:6px 12px;border-radius:6px';
+            document.body.append(t);
+        }
+
+        createBtn.addEventListener('click', async () => {
+            const prompt = input.value;
+            window.mock.submissions.push({ prompt, mode: window.mock.mode, frame: Boolean(window.mock.startFrame) });
+            createBtn.disabled = true;
+            const { card, done } = progressCard();
+            if (window.mock.failNext) {
+                const msg = window.mock.failNext; window.mock.failNext = null;
+                setTimeout(() => { done(); card.remove(); toast(msg); createBtn.disabled = false; }, 400);
+                return;
+            }
+            const isVideo = Boolean(window.mock.startFrame);
+            setTimeout(async () => {
+                done();
+                addHover(card);
+                const actions = document.createElement('div');
+                actions.className = 'actions';
+                if (isVideo) {
+                    const v = document.createElement('video');
+                    v.muted = true;
+                    v.src = await videoBlobUrl();
+                    card.append(v);
+                    const dl = document.createElement('button');
+                    dl.className = 'css-only';                       // revealed only by CSS :hover
+                    dl.setAttribute('aria-label', 'Download');
+                    dl.innerHTML = '<i>download</i>';
+                    dl.addEventListener('click', () => {
+                        const menu = document.createElement('div');
+                        menu.className = 'menu';
+                        menu.style.cssText = 'top:120px;left:120px';
+                        const item = document.createElement('div');
+                        item.setAttribute('role', 'menuitem');
+                        item.textContent = 'Original size (720p)';
+                        item.addEventListener('click', () => { window.mock.downloads.push(v.src); menu.remove(); });
+                        menu.append(item);
+                        document.body.append(menu);
+                    });
+                    card.append(dl);
+                    window.mock.startFrame = null;
+                    frame.style.display = 'none';
+                } else {
+                    const img = document.createElement('img');
+                    img.alt = 'generated';
+                    img.src = imageUrl(prompt);
+                    card.append(img);
+                    const animate = document.createElement('button');
+                    animate.setAttribute('aria-label', 'Animate');
+                    animate.innerHTML = '<i>movie</i>';
+                    animate.addEventListener('click', () => {
+                        window.mock.startFrame = img.src; // image becomes start frame; user must submit
+                        frame.style.backgroundImage = `url(${img.src})`;
+                        frame.style.display = 'block';
+                    });
+                    actions.append(animate);
+                }
+                card.append(actions);
+                createBtn.disabled = false;
+            }, isVideo ? 1500 : 1200);
+        });
+    </script>
+
+    <!-- the real content-script modules under test (not content.js: it needs chrome.runtime) -->
+    <script src="../../src/content/selectors.js"></script>
+    <script src="../../src/content/dom-utils.js"></script>
+    <script src="../../src/content/flow-adapter.js"></script>
+    <script src="run-adapter.js"></script>
+</body>
+</html>

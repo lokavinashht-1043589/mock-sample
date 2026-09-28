@@ -1,0 +1,413 @@
+import {
+    JOB_STATUS,
+    STATUS_LABELS,
+    getNextJob,
+    getStats,
+    buildSummary,
+    markInterrupted,
+    resetJob
+} from './queue-manager.js';
+import { RUN_STATUS } from './state-manager.js';
+import { sleep as defaultSleep, isAbortError, AbortedError } from '../utils/helpers.js';
+
+export class AuthRequiredError extends Error {
+    constructor(message = 'Google authentication is required.') {
+        super(message);
+        this.name = 'AuthRequiredError';
+        this.code = 'AUTH_REQUIRED';
+    }
+}
+
+export const AUTH_MESSAGE =
+    'Google authentication is required.\n\nPlease log in to Google Flow manually.\nAutomation will continue after authentication.';
+
+/**
+ * Central state machine. Talks to Google Flow ONLY through `adapter`, which must implement:
+ *   checkReady()                          -> { ready, authenticated, reason? }
+ *   generateImage(prompt, opts)           -> imageRef
+ *   animateImage(imageRef, opts)          -> pendingVideoRef
+ *   waitForVideo(pendingVideoRef, opts)   -> videoRef
+ *   getVideoDownloadInfo(videoRef, opts)  -> { url, mimeHint? }
+ *   triggerNativeDownload(videoRef, opts) -> void   (clicks Flow's own download button)
+ *   abort()                               -> void
+ * (see tests/mocks/mock-flow-adapter.js and src/background/remote-flow-adapter.js)
+ *
+ *   PENDING -> GENERATING_IMAGE -> IMAGE_READY -> ANIMATING -> GENERATING_VIDEO
+ *           -> VIDEO_READY -> DOWNLOADING -> COMPLETED -> next job
+ *   any state -> error -> retry (up to maxRetries) -> FAILED -> next job
+ */
+export class FlowAutomationEngine {
+    constructor({ stateManager, adapter, downloadManager, logger, getSettings, emit = () => {}, sleep = defaultSleep, authPollMs = 5000, retryBackoffMs = 3000 }) {
+        this.state = stateManager;
+        this.adapter = adapter;
+        this.downloads = downloadManager;
+        this.logger = logger;
+        this.getSettings = getSettings;
+        this.emit = emit;
+        this.sleep = sleep;
+        this.authPollMs = authPollMs;
+        this.retryBackoffMs = retryBackoffMs;
+
+        this.loopPromise = null;
+        this.pauseRequested = false;
+        this.stopRequested = false;
+        this.abortController = null;
+    }
+
+    get isRunning() {
+        return this.loopPromise !== null;
+    }
+
+    // ───────────────────────────── controls ─────────────────────────────
+
+    /** Launch the processing loop. Resolves once the loop has been started (not finished). */
+    async start({ scope = null } = {}) {
+        if (this.isRunning) {
+            this.logger.warn('Start ignored: automation is already running');
+            return false;
+        }
+        this.pauseRequested = false;
+        this.stopRequested = false;
+        await this.state.update({ runStatus: RUN_STATUS.RUNNING, scope, summary: null, statusMessage: 'Starting…' });
+        this.loopPromise = this.processQueue().finally(() => {
+            this.loopPromise = null;
+        });
+        return true;
+    }
+
+    /** For tests / callers that want to await completion. */
+    async whenIdle() {
+        if (this.loopPromise) await this.loopPromise;
+    }
+
+    async pause() {
+        if (!this.isRunning) return;
+        this.pauseRequested = true;
+        this.logger.info('Pause requested — the current job will finish first');
+        await this.state.update({ runStatus: RUN_STATUS.PAUSING, statusMessage: 'Pausing after the current job…' });
+    }
+
+    async resume() {
+        if (this.isRunning) {
+            if (this.pauseRequested) {
+                this.pauseRequested = false;
+                this.logger.info('Pause cancelled — continuing');
+                await this.state.update({ runStatus: RUN_STATUS.RUNNING, statusMessage: 'Resumed' });
+            }
+            return true;
+        }
+        this.logger.info('Resuming automation');
+        return this.start({ scope: this.state.get().scope });
+    }
+
+    async stop() {
+        if (!this.isRunning) {
+            await this.state.update({ runStatus: RUN_STATUS.STOPPED, statusMessage: 'Stopped' });
+            return;
+        }
+        this.stopRequested = true;
+        this.logger.info('Stop requested');
+        await this.state.update({ runStatus: RUN_STATUS.STOPPING, statusMessage: 'Stopping…' });
+        this.abortController?.abort(new AbortedError('Stopped by user'));
+        try {
+            await this.adapter.abort?.();
+        } catch {
+            // best effort
+        }
+        await this.whenIdle();
+    }
+
+    /** Put a failed (or any non-running) job back in the queue with fresh retries. */
+    async retryJob(number) {
+        const job = this.state.getJob(number);
+        if (!job) throw new Error(`Job ${number} not found`);
+        if (this.state.get().currentJobNumber === number && this.isRunning) throw new Error(`Job ${number} is currently running`);
+        await this.state.updateJob(number, resetJob(job));
+        this.logger.info(`Job ${number} queued for retry`);
+    }
+
+    async retryFailed() {
+        const failed = this.state.get().jobs.filter((j) => j.status === JOB_STATUS.FAILED).map((j) => j.number);
+        for (const n of failed) await this.state.updateJob(n, (job) => resetJob(job));
+        return failed;
+    }
+
+    /**
+     * Called once when the service worker boots. If a run was in progress, the job that was
+     * mid-flight is parked (PAUSED). `resume` decides whether processing continues automatically.
+     */
+    async restore({ resume }) {
+        const s = this.state.get();
+        const wasActive = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.STOPPING].includes(s.runStatus);
+
+        // A download that was already started may have finished while we were gone.
+        for (const job of s.jobs) {
+            if (job.status === JOB_STATUS.DOWNLOADING && job.downloadId != null && this.downloads?.lookupCompleted) {
+                const done = await this.downloads.lookupCompleted(job.downloadId).catch(() => null);
+                if (done) {
+                    await this.state.updateJob(job.number, { status: JOB_STATUS.COMPLETED, outputFile: done.filename, error: null, finishedAt: Date.now() });
+                    this.logger.info(`Job ${job.number}: download finished while the extension was inactive (${done.filename})`);
+                }
+            }
+        }
+
+        const jobs = markInterrupted(this.state.get().jobs, 'Interrupted by browser/extension restart');
+        if (!wasActive) {
+            await this.state.update({ jobs, currentJobNumber: null });
+            return false;
+        }
+        if (resume && s.runStatus !== RUN_STATUS.STOPPING) {
+            await this.state.update({ jobs, currentJobNumber: null });
+            this.logger.info('Restored previous queue — resuming');
+            return this.start({ scope: s.scope });
+        }
+        await this.state.update({
+            jobs,
+            currentJobNumber: null,
+            runStatus: s.runStatus === RUN_STATUS.STOPPING ? RUN_STATUS.STOPPED : RUN_STATUS.PAUSED,
+            statusMessage: 'Restored previous queue. Press Resume to continue.'
+        });
+        this.logger.info('Restored previous queue (Auto Resume is off — press Resume to continue)');
+        return false;
+    }
+
+    // ───────────────────────────── main loop ─────────────────────────────
+
+    async processQueue() {
+        this.abortController = new AbortController();
+        this.logger.info('Automation started');
+        try {
+            let needDelay = false;
+            for (;;) {
+                if (this.stopRequested) break;
+                if (this.pauseRequested) {
+                    await this.state.update({ runStatus: RUN_STATUS.PAUSED, currentJobNumber: null, statusMessage: 'Paused' });
+                    this.logger.info('Automation paused');
+                    return;
+                }
+                const job = getNextJob(this.state.get().jobs, this.state.get().scope);
+                if (!job) break;
+
+                if (needDelay) {
+                    needDelay = false;
+                    const delay = this.getSettings().delayBetweenJobsMs;
+                    if (delay > 0) {
+                        await this.state.update({ statusMessage: `Waiting ${Math.round(delay / 1000)}s before job ${job.number}…` }, { immediate: false });
+                        await this.sleep(delay, this.abortController.signal);
+                        continue; // re-check pause/stop and re-pick (queue may have changed)
+                    }
+                }
+                await this.runJobWithRetries(job.number);
+                needDelay = true;
+            }
+
+            if (this.stopRequested) {
+                await this.state.update({ runStatus: RUN_STATUS.STOPPED, currentJobNumber: null, statusMessage: 'Stopped' });
+                this.logger.info('Automation stopped');
+                return;
+            }
+            await this.finish();
+        } catch (error) {
+            if (isAbortError(error) || this.stopRequested) {
+                await this.state.update({ runStatus: RUN_STATUS.STOPPED, currentJobNumber: null, statusMessage: 'Stopped' });
+                this.logger.info('Automation stopped');
+                return;
+            }
+            this.logger.error(`Automation error: ${error.message}`);
+            this.emit('AUTOMATION_ERROR', { error: error.message });
+            await this.state.update({ runStatus: RUN_STATUS.ERROR, currentJobNumber: null, statusMessage: `Error: ${error.message}` });
+        } finally {
+            this.abortController = null;
+        }
+    }
+
+    async finish() {
+        const summary = buildSummary(this.state.get().jobs);
+        await this.state.update({ runStatus: RUN_STATUS.COMPLETED, currentJobNumber: null, summary, statusMessage: 'Automation complete' });
+        this.logger.info(`Automation complete — ${summary.completed}/${summary.total} completed, ${summary.failed} failed`);
+    }
+
+    async runJobWithRetries(number) {
+        const { maxRetries } = this.getSettings();
+        let job = this.state.getJob(number);
+
+        if (job.status === JOB_STATUS.PAUSED && job.interruptedStage) {
+            if (job.retryCount >= maxRetries) {
+                await this.failJob(number, job.error || 'Interrupted');
+                return;
+            }
+            await this.state.updateJob(number, { retryCount: job.retryCount + 1, interruptedStage: null });
+            this.logger.info(`Job ${number}: Retry #${job.retryCount + 1} (previous attempt was interrupted)`);
+        }
+
+        for (;;) {
+            try {
+                await this.processJob(this.state.getJob(number));
+                return;
+            } catch (error) {
+                if (isAbortError(error) || this.stopRequested) {
+                    await this.state.updateJob(number, (j) => ({ ...resetJob(j, { keepRetries: true }), error: 'Stopped before completion' }));
+                    throw new AbortedError('Stopped by user');
+                }
+                if (error.code === 'AUTH_REQUIRED') {
+                    await this.waitForAuthentication();
+                    continue; // does not consume a retry
+                }
+                if (error.code === 'QUOTA_EXCEEDED') {
+                    // Respect Flow's limits: don't burn retries, park the job and pause the run.
+                    await this.state.updateJob(number, (j) => ({ ...resetJob(j, { keepRetries: true }), error: error.message }));
+                    this.pauseRequested = true;
+                    this.logger.error(`Google Flow reported a usage limit: ${error.message} — pausing automation`);
+                    this.emit('AUTOMATION_ERROR', { error: error.message, code: 'QUOTA_EXCEEDED' });
+                    await this.state.update({ statusMessage: `Paused: Flow usage limit reached (${error.message})` });
+                    return;
+                }
+                job = this.state.getJob(number);
+                const message = error.message || String(error);
+                this.logger.warn(`Job ${number} error at "${STATUS_LABELS[job.status] || job.status}": ${message}`);
+
+                if (error.retryable !== false && job.retryCount < maxRetries) {
+                    const attempt = job.retryCount + 1;
+                    await this.state.updateJob(number, { status: JOB_STATUS.PENDING, retryCount: attempt, error: message });
+                    this.logger.info(`Job ${number}: Retry #${attempt}`);
+                    await this.state.update({ statusMessage: `Job ${number}: retry #${attempt} after error: ${message}` });
+                    await this.sleep(this.retryBackoffMs, this.abortController?.signal);
+                    continue;
+                }
+                await this.failJob(number, message);
+                return;
+            }
+        }
+    }
+
+    async failJob(number, message) {
+        await this.state.updateJob(number, { status: JOB_STATUS.FAILED, error: message, finishedAt: Date.now() });
+        const job = this.state.getJob(number);
+        this.logger.error(`Job ${number} failed after ${job.retryCount} retr${job.retryCount === 1 ? 'y' : 'ies'}: ${message}`);
+        this.emit('JOB_FAILED', { number, error: message, retryCount: job.retryCount });
+    }
+
+    async waitForAuthentication() {
+        await this.state.update({ runStatus: RUN_STATUS.WAITING_AUTH, statusMessage: AUTH_MESSAGE });
+        this.logger.warn('Google authentication required — waiting for manual login');
+        this.emit('AUTOMATION_ERROR', { error: AUTH_MESSAGE, code: 'AUTH_REQUIRED' });
+        for (;;) {
+            await this.sleep(this.authPollMs, this.abortController?.signal);
+            if (this.stopRequested) throw new AbortedError('Stopped by user');
+            const status = await this.adapter.checkReady().catch(() => null);
+            if (status?.authenticated) break;
+        }
+        this.logger.info('Authentication detected — continuing');
+        await this.state.update({ runStatus: this.pauseRequested ? RUN_STATUS.PAUSING : RUN_STATUS.RUNNING, statusMessage: 'Authenticated' });
+    }
+
+    // ───────────────────────────── one attempt ─────────────────────────────
+
+    async processJob(job) {
+        const n = job.number;
+        const signal = this.abortController?.signal;
+        await this.state.update({ currentJobNumber: n, statusMessage: `Job ${n}: preparing…` });
+
+        const ready = await this.adapter.checkReady({ signal });
+        if (ready && ready.authenticated === false) throw new AuthRequiredError();
+        if (ready && ready.ready === false) throw new Error(ready.reason || 'Google Flow is not ready');
+
+        if (this.downloads?.assertOutputAvailable) await this.downloads.assertOutputAvailable(job);
+
+        this.logger.info(`Job ${n} started`);
+        this.emit('JOB_STARTED', { number: n });
+        await this.setJobStatus(n, JOB_STATUS.GENERATING_IMAGE, { startedAt: Date.now(), error: null });
+
+        const image = await this.generateImage(job);
+        await this.setJobStatus(n, JOB_STATUS.IMAGE_READY);
+
+        const pendingVideo = await this.animateImage(job, image);
+        const video = await this.waitForVideo(job, pendingVideo);
+        await this.setJobStatus(n, JOB_STATUS.VIDEO_READY);
+
+        const result = await this.downloadVideo(job, video);
+        await this.state.updateJob(n, { status: JOB_STATUS.COMPLETED, outputFile: result.filename, error: null, finishedAt: Date.now() });
+        this.logger.info(`Saved: ${result.filename}`);
+        this.logger.info(`Job ${n} completed`);
+        this.emit('JOB_COMPLETED', { number: n, outputFile: result.filename });
+    }
+
+    async generateImage(job) {
+        const settings = this.getSettings();
+        this.logger.info(`Job ${job.number}: entering prompt and generating image`);
+        const image = await this.adapter.generateImage(job.prompt, {
+            signal: this.abortController?.signal,
+            timeoutMs: settings.imageGenerationTimeoutMs,
+            elementTimeoutMs: settings.elementTimeoutMs,
+            onProgress: (detail) => this.progress(job.number, detail)
+        });
+        if (!image) throw new Error('Generated image not found');
+        this.logger.info(`Job ${job.number}: image generation completed`);
+        return image;
+    }
+
+    async animateImage(job, image) {
+        const settings = this.getSettings();
+        await this.setJobStatus(job.number, JOB_STATUS.ANIMATING);
+        this.logger.info(`Job ${job.number}: animation started`);
+        const pending = await this.adapter.animateImage(image, {
+            prompt: settings.animationPromptMode === 'reuse' ? job.prompt : '',
+            signal: this.abortController?.signal,
+            elementTimeoutMs: settings.elementTimeoutMs,
+            onProgress: (detail) => this.progress(job.number, detail)
+        });
+        await this.setJobStatus(job.number, JOB_STATUS.GENERATING_VIDEO);
+        return pending;
+    }
+
+    async waitForVideo(job, pendingVideo) {
+        const settings = this.getSettings();
+        const video = await this.adapter.waitForVideo(pendingVideo, {
+            signal: this.abortController?.signal,
+            timeoutMs: settings.videoGenerationTimeoutMs,
+            elementTimeoutMs: settings.elementTimeoutMs,
+            onProgress: (detail) => this.progress(job.number, detail)
+        });
+        if (!video) throw new Error('Generated video not found');
+        this.logger.info(`Job ${job.number}: video generation completed`);
+        return video;
+    }
+
+    async downloadVideo(job, video) {
+        const settings = this.getSettings();
+        const signal = this.abortController?.signal;
+        await this.setJobStatus(job.number, JOB_STATUS.DOWNLOADING);
+        const info = await this.adapter.getVideoDownloadInfo(video, { signal, elementTimeoutMs: settings.elementTimeoutMs });
+        this.logger.info(`Job ${job.number}: download started`);
+        return this.downloads.downloadVideo(info, job, {
+            signal,
+            timeoutMs: settings.downloadTimeoutMs,
+            triggerNativeDownload: () => this.adapter.triggerNativeDownload(video, { signal, elementTimeoutMs: settings.elementTimeoutMs }),
+            onStarted: async ({ downloadId }) => {
+                await this.state.updateJob(job.number, { downloadId });
+                this.emit('DOWNLOAD_STARTED', { number: job.number, downloadId });
+            },
+            onCompleted: ({ filename }) => this.emit('DOWNLOAD_COMPLETED', { number: job.number, filename })
+        });
+    }
+
+    async setJobStatus(number, status, extra = {}) {
+        await this.state.updateJob(number, { status, ...extra });
+        await this.state.update({ statusMessage: `Job ${number}: ${STATUS_LABELS[status]}…` });
+        this.emit('JOB_PROGRESS', { number, status });
+    }
+
+    progress(number, detail) {
+        if (!detail) return;
+        const text = typeof detail === 'string' ? detail : detail.message;
+        if (!text) return;
+        this.logger.debug(`Job ${number}: ${text}`);
+        this.state.update({ statusMessage: `Job ${number}: ${text}` }, { immediate: false }).catch(() => {});
+        this.emit('JOB_PROGRESS', { number, detail: text });
+    }
+
+    getStats() {
+        const s = this.state.get();
+        return getStats(s.jobs, s.currentJobNumber);
+    }
+}

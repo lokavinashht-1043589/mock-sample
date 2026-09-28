@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Google Flow Automation</title>
+    <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <span class="logo" aria-hidden="true">▶</span>
+            <h1>Google Flow Automation</h1>
+        </div>
+        <span id="runPill" class="pill" data-status="idle">Idle</span>
+        <button id="openOptions" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+
+    <section class="panel control-panel" aria-label="Progress and controls">
+        <div class="progress-row">
+            <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <span class="progress-label" id="progressLabel">0 / 0</span>
+        </div>
+        <dl class="stats">
+            <div><dt>Completed</dt><dd id="statCompleted">0</dd></div>
+            <div><dt>Failed</dt><dd id="statFailed">0</dd></div>
+            <div><dt>Pending</dt><dd id="statPending">0</dd></div>
+            <div><dt>Current</dt><dd id="statCurrent">–</dd></div>
+            <div><dt>Total</dt><dd id="statTotal">0</dd></div>
+        </dl>
+        <div class="current" id="currentBox" hidden>
+            <span class="label">Current prompt</span>
+            <p id="currentPrompt"></p>
+        </div>
+        <div class="controls">
+            <button id="btnStart" class="btn primary">Start</button>
+            <button id="btnPause" class="btn">Pause</button>
+            <button id="btnResume" class="btn">Resume</button>
+            <button id="btnStop" class="btn danger">Stop</button>
+        </div>
+        <p class="status" id="statusLine" aria-live="polite">Ready</p>
+    </section>
+
+    <nav class="tabs" role="tablist">
+        <button role="tab" class="tab active" data-tab="prompts" aria-selected="true">Prompts</button>
+        <button role="tab" class="tab" data-tab="queue" aria-selected="false">Queue <span id="queueCount" class="count">0</span></button>
+        <button role="tab" class="tab" data-tab="log" aria-selected="false">Log</button>
+        <button role="tab" class="tab" data-tab="diagnostics" aria-selected="false">Diagnostics</button>
+    </nav>
+
+    <main>
+        <!-- Prompts -->
+        <section class="tab-panel" id="tab-prompts" role="tabpanel">
+            <label for="prompts" class="label">Prompts — one per line: <code>&lt;number&gt;] &lt;prompt&gt;</code></label>
+            <textarea id="prompts" spellcheck="false" placeholder="1] Enter your first prompt&#10;2] Enter your second prompt&#10;3] Enter your third prompt"></textarea>
+            <div class="row">
+                <button id="btnImport" class="btn">Import TXT</button>
+                <button id="btnValidate" class="btn primary-outline">Validate Prompts</button>
+                <button id="btnClear" class="btn ghost">Clear</button>
+                <input type="file" id="fileInput" accept=".txt,text/plain" hidden />
+            </div>
+            <div id="validation" class="validation" hidden></div>
+        </section>
+
+        <!-- Queue -->
+        <section class="tab-panel" id="tab-queue" role="tabpanel" hidden>
+            <div id="summary" class="summary" hidden></div>
+            <div class="row">
+                <button id="btnRetryFailed" class="btn">Retry Failed Jobs</button>
+                <button id="btnResetQueue" class="btn ghost">Reset queue</button>
+            </div>
+            <ol id="queueList" class="queue" aria-label="Job queue"></ol>
+            <p id="queueEmpty" class="empty">No jobs yet. Paste prompts and click <b>Validate Prompts</b>.</p>
+        </section>
+
+        <!-- Log -->
+        <section class="tab-panel" id="tab-log" role="tabpanel" hidden>
+            <div class="row">
+                <button id="btnCopyLog" class="btn">Copy Debug Log</button>
+                <button id="btnClearLog" class="btn ghost">Clear Debug Log</button>
+                <span id="debugHint" class="hint"></span>
+            </div>
+            <pre id="logBox" class="log" tabindex="0"></pre>
+        </section>
+
+        <!-- Diagnostics -->
+        <section class="tab-panel" id="tab-diagnostics" role="tabpanel" hidden>
+            <p class="hint">Open a Google Flow project (signed in) and run this. For the image/video/animate/download checks, have at least one generated result on screen.</p>
+            <div class="row">
+                <button id="btnDiagnostics" class="btn primary-outline">Run Flow Diagnostics</button>
+            </div>
+            <div id="diagnostics" class="diagnostics"></div>
+        </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+</body>
+</html>

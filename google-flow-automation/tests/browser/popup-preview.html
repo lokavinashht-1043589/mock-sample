@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Popup preview (stubbed chrome.*)</title>
+    <link rel="stylesheet" href="../../src/popup/popup.css" />
+</head>
+<body>
+    <!-- Renders the real popup markup + popup.js against a fake background, for visual checks. -->
+    <script type="module">
+        const html = await (await fetch('../../src/popup/popup.html')).text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('script').forEach((s) => s.remove());
+        document.body.replaceChildren(...doc.body.childNodes);
+
+        const job = (number, prompt, status, extra = {}) => ({ number, label: String(number), prompt, status, retryCount: 0, error: null, outputFile: null, ...extra });
+        const state = {
+            promptsText: '1] A cinematic futuristic city at sunset\n2] A cute robot walking through a magical forest\n3] An astronaut exploring an alien planet\n4] A dragon flying above ancient mountains',
+            jobs: [
+                job(1, 'A cinematic futuristic city at sunset', 'completed', { outputFile: '1.mp4' }),
+                job(2, 'A cute robot walking through a magical forest', 'generating_video'),
+                job(3, 'An astronaut exploring an alien planet', 'pending'),
+                job(4, 'A dragon flying above ancient mountains', 'failed', { error: 'Video generation timed out', retryCount: 2 })
+            ],
+            currentJobNumber: 2,
+            runStatus: 'running',
+            statusMessage: 'Job 2: Generating video… progress 50%',
+            summary: null
+        };
+        const stats = { total: 4, completed: 1, failed: 1, pending: 1, active: 1, current: 2, done: 2 };
+        globalThis.chrome = {
+            runtime: {
+                sendMessage: async (msg) => {
+                    if (msg.type === 'GET_STATE') return { ok: true, state, stats, running: true, settings: { debugMode: true } };
+                    if (msg.type === 'GET_LOGS') return { ok: true, entries: [{ t: Date.now(), level: 'info', message: 'Automation started' }, { t: Date.now(), level: 'warn', message: 'Job 4 error at "Generating video": Video generation timed out' }], text: '' };
+                    return { ok: true };
+                },
+                onMessage: { addListener() {} },
+                openOptionsPage() {}
+            }
+        };
+        await import('../../src/popup/popup.js');
+    </script>
+</body>
+</html>
