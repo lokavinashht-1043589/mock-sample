@@ -133,6 +133,17 @@ test('authentication required: waits for login without consuming retries', async
     assert.ok(statuses.includes(RUN_STATUS.WAITING_AUTH));
 });
 
+test('no Flow project open: waits for the user to open one without consuming retries', async () => {
+    const adapter = new MockFlowAdapter({
+        ready: [{ ready: false, authenticated: true, projectOpen: false }, { authenticated: true, projectOpen: false }, { ready: true, authenticated: true, projectOpen: true }]
+    });
+    const { engine, stateManager, statuses } = await setup({ text: '1] A', adapter });
+    await runToEnd(engine);
+    assert.equal(stateManager.getJob(1).status, 'completed');
+    assert.equal(stateManager.getJob(1).retryCount, 0);
+    assert.ok(statuses.includes(RUN_STATUS.WAITING_PROJECT));
+});
+
 test('pause lets the current job finish, then stops before the next; resume continues', async () => {
     let engineRef;
     const adapter = new MockFlowAdapter({ onStep: (name, prompt) => name === 'waitForVideo' && prompt === 'A' && engineRef.pause() });

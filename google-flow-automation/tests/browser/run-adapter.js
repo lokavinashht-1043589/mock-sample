@@ -10,13 +10,14 @@
     const opts = { timeoutMs: 15000, elementTimeoutMs: 5000, onProgress: (p) => logs.push(`progress: ${typeof p === 'string' ? p : JSON.stringify(p)}`) };
 
     try {
-        const ready = await adapter.checkReady({ prepare: false });
-        check('checkReady: ready + authenticated', ready.ready && ready.authenticated, ready);
+        const ready = adapter.checkReady();
+        check('checkReady: ready + authenticated + project open', ready.ready && ready.authenticated && ready.projectOpen, ready);
 
         const prompt = 'A cinematic futuristic city, neon lights, rain, 4K';
         const image = await adapter.generateImage(prompt, opts);
         check('image mode was selected', window.mock.submissions[0].mode === 'Create Image', window.mock.submissions[0]);
         check('prompt submitted exactly', window.mock.submissions[0].prompt === prompt, window.mock.submissions[0].prompt);
+        check('clicked the composer Create button, not another "Create…" control', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
         check('new image found (not the old one)', image.ref && adapter.refs.get(image.ref).alt === 'generated', image);
 
         const pending = await adapter.animateImage(image, { ...opts, prompt });

@@ -14,8 +14,20 @@ export class RemoteFlowAdapter {
     async checkReady({ signal } = {}) {
         const conn = await this.connection.ensureConnected({ signal });
         if (!conn.ok) return { ready: false, authenticated: conn.authRequired ? false : null, reason: conn.reason };
-        const { elementTimeoutMs } = this.getSettings();
-        return this.connection.command(COMMANDS.CHECK_READY, { prepare: true, elementTimeoutMs }, { signal, timeoutMs: elementTimeoutMs });
+        return this.connection.command(COMMANDS.CHECK_READY, {}, { signal, timeoutMs: 10000 });
+    }
+
+    /**
+     * Where the user is in Flow, without opening or changing anything (for the popup).
+     * @returns {{connected:boolean, noTab?:boolean, authRequired?:boolean, reason?:string,
+     *            authenticated?:boolean|null, projectOpen?:boolean, projectName?:string|null, promptFound?:boolean}}
+     */
+    async getStatus({ signal, preferProject = true } = {}) {
+        if (preferProject) await this.connection.preferProjectTab();
+        const conn = await this.connection.ensureConnected({ signal, openIfMissing: false, waitMs: 4000 });
+        if (!conn.ok) return { connected: false, noTab: Boolean(conn.noTab), authRequired: Boolean(conn.authRequired), reason: conn.reason };
+        const status = await this.connection.command(COMMANDS.GET_STATUS, {}, { signal, timeoutMs: 5000 });
+        return { connected: true, ...status };
     }
 
     async generateImage(prompt, { signal, timeoutMs, elementTimeoutMs, onProgress } = {}) {

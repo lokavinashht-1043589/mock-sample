@@ -113,6 +113,38 @@ export class FlowConnection {
         return tabs.find((t) => this.ports.has(t.id)) || tabs.find((t) => /\/project\//.test(t.url || '')) || tabs[0] || null;
     }
 
+    /** If the tracked tab isn't a Flow project but another Flow tab is, track that one instead. */
+    async preferProjectTab() {
+        const isProject = (t) => /\/project\//.test(t?.url || '');
+        const tabs = await chrome.tabs.query({ url: flowMatchPatterns() }).catch(() => []);
+        if (isProject(tabs.find((t) => t.id === this.tabId))) return;
+        const project = tabs.find(isProject);
+        if (project && project.id !== this.tabId) {
+            this.tabId = project.id;
+            this.onTabChanged(project.id);
+            chrome.tabs.update(project.id, { autoDiscardable: false }).catch(() => {});
+        }
+    }
+
+    /** Bring the Flow tab to the front, opening Flow if no tab exists. */
+    async focusFlowTab() {
+        await this.preferProjectTab();
+        let tab = this.tabId != null ? await chrome.tabs.get(this.tabId).catch(() => null) : null;
+        if (!tab) tab = await this.findFlowTab();
+        if (!tab) {
+            const url = this.getSettings().flowUrl;
+            tab = await chrome.tabs.create({ url, active: true });
+            this.logger.info(`Opened Google Flow: ${url}`);
+        }
+        if (tab.id !== this.tabId) {
+            this.tabId = tab.id;
+            this.onTabChanged(tab.id);
+        }
+        await chrome.tabs.update(tab.id, { active: true, autoDiscardable: false }).catch(() => {});
+        await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+        return tab.id;
+    }
+
     /**
      * Make sure there is a Flow tab with a live content script.
      * @returns {Promise<{ok:true,tabId:number}|{ok:false,reason:string,authRequired?:boolean,noTab?:boolean}>}

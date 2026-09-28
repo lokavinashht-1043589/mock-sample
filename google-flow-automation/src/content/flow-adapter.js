@@ -78,33 +78,36 @@
             return null; // unknown
         }
 
-        async checkReady({ prepare = false, signal, elementTimeoutMs = 30000 } = {}) {
+        /**
+         * Where the user is in Flow. The user opens (or creates) the project themselves; the
+         * extension never navigates Flow for them. A project is open when the URL is a project
+         * page (/project/<id>) or, for UI variants without one, the prompt box is on screen.
+         */
+        getStatus() {
             const page = this.detectPage();
-            let auth = this.detectAuth();
-            if (auth === false) return { ...page, ready: false, authenticated: false, reason: 'Sign-in required' };
-            if (this.findPromptInput()) return { ...page, ready: true, authenticated: true };
-            if (!prepare) return { ...page, ready: false, authenticated: auth, reason: 'Flow prompt input not found' };
-
-            // Not in a project yet: use Flow's own "New project" / "Create with Google Flow" entry.
-            const entry = dom.findFirst(this.sel('newProjectButton')) || dom.findFirst(this.sel('enterWorkspaceButton'));
-            if (entry) {
-                this.debug(`Opening Flow workspace via ${dom.describeElement(entry)}`);
-                dom.click(entry);
-                await dom
-                    .waitForCondition(() => this.findPromptInput() || dom.findFirst(this.sel('signInIndicator')), { timeout: elementTimeoutMs, signal })
-                    .catch((e) => {
-                        if (e.code === 'ABORTED') throw e;
-                    });
-            }
-            auth = this.detectAuth();
-            if (auth === false) return { ...page, ready: false, authenticated: false, reason: 'Sign-in required' };
-            if (this.findPromptInput()) return { ...page, ready: true, authenticated: true };
+            const authenticated = this.detectAuth();
+            const projectId = location.pathname.match(/\/project\/([^/?#]+)/)?.[1] || null;
+            const promptFound = Boolean(this.findPromptInput());
+            const projectOpen = authenticated !== false && (Boolean(projectId) || promptFound);
+            const title = dom.normalizeText(document.title.replace(/\s*[-|–—]\s*(Google\s+)?Flow\b.*$/i, ''));
             return {
                 ...page,
-                ready: false,
-                authenticated: auth,
-                reason: 'Flow prompt input not found. Open a Flow project, or update the "promptInput" selector (run Flow Diagnostics).'
+                authenticated: promptFound ? true : authenticated,
+                projectOpen,
+                projectId,
+                projectName: projectOpen && title && !/^(google\s+)?flow$/i.test(title) ? title : null,
+                promptFound
             };
+        }
+
+        checkReady() {
+            const status = this.getStatus();
+            if (status.authenticated === false) return { ...status, ready: false, reason: 'Sign-in required' };
+            if (!status.projectOpen) return { ...status, ready: false, reason: 'No project is open in Google Flow. Open or create a project there.' };
+            if (!status.promptFound) {
+                return { ...status, ready: false, reason: 'The Flow project is open but its prompt box was not found (still loading, or update the "promptInput" selector — run Flow Diagnostics).' };
+            }
+            return { ...status, ready: true };
         }
 
         // ── prompt ───────────────────────────────────────────────────────
@@ -132,26 +135,94 @@
             throw new FlowError('Prompt did not appear correctly in the Flow input');
         }
 
-        async clickGenerate({ signal, timeout = 30000 } = {}) {
+        /**
+         * The submit button of the prompt's own composer: search outward from the prompt box so
+         * other "Create…" buttons on the page (new project, collections, mode menus) never win.
+         */
+        findGenerateButton(input = this.findPromptInput()) {
+            const candidate = (el) => el.matches('button,[role="button"]') && !el.hasAttribute('aria-haspopup') && !(input && el.contains(input));
+            if (input) {
+                let node = input.parentElement;
+                for (let depth = 0; node && node !== document.body && depth < 6; depth++, node = node.parentElement) {
+                    const hit = dom.findFirst(this.sel('generateButton'), { root: node, filter: candidate });
+                    if (hit) return hit;
+                }
+            }
+            return dom.findFirst(this.sel('generateButton'), { filter: candidate });
+        }
+
+        /** Re-announce the prompt to the page's framework so it enables its submit button. */
+        nudgePrompt(input, text) {
+            if (!input || !text) return;
+            if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+                dom.replaceText(input, text);
+            } else {
+                dom.pasteText(input, text);
+                if (dom.normalizeText(dom.readInputText(input)) !== dom.normalizeText(text)) dom.replaceText(input, text);
+            }
+            dom.pressKey(input, 'End');
+        }
+
+        /** One way of submitting the composer. Returns a description for the log. */
+        async pressGenerate(method, { text, signal, timeout }) {
+            const input = this.findPromptInput();
+            if (method === 'enter') {
+                if (!input) return null;
+                input.focus();
+                dom.pressKey(input, 'Enter');
+                return 'pressing Enter in the prompt box';
+            }
             const button = await dom
-                .waitForElement(this.sel('generateButton'), { timeout: Math.min(timeout, 10000), signal, filter: dom.isEnabled })
+                .waitForCondition(() => this.findGenerateButton(input), { timeout: Math.min(timeout, 10000), signal })
                 .catch((e) => {
                     if (e.code === 'ABORTED') throw e;
                     return null;
                 });
-            if (button) {
-                this.debug(`Clicking generate: ${dom.describeElement(button)}`);
-                dom.click(button);
-                return;
+            if (!button) return null;
+
+            // Flow enables the button only once its own state has seen the prompt.
+            const enabled = () => dom.isEnabled(button) && button.isConnected;
+            const waitEnabled = (ms) =>
+                dom.waitForCondition(enabled, { timeout: ms, signal, interval: 200 }).catch((e) => {
+                    if (e.code === 'ABORTED') throw e;
+                    return false;
+                });
+            if (!(await waitEnabled(4000))) {
+                this.debug('Generate button is still disabled — re-entering the prompt so Flow registers it');
+                this.nudgePrompt(input, text);
+                if (!(await waitEnabled(4000))) this.log('warn', `Generate button stays disabled (${dom.describeElement(button)}); clicking anyway`);
             }
-            // Fallback: Enter in the prompt box (the normal keyboard submit).
-            const input = this.findPromptInput();
-            if (!input) throw new FlowError('Generate control not found (selector "generateButton")', { code: 'UI_NOT_FOUND' });
-            this.debug('Generate button not found — submitting with Enter');
-            input.focus();
-            for (const type of ['keydown', 'keypress', 'keyup']) {
-                input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+            this.debug(`Clicking generate: ${dom.describeElement(button)}`);
+            dom.click(button);
+            return { button, how: `clicking ${dom.describeElement(button)}` };
+        }
+
+        /**
+         * Submit the composer and CONFIRM Flow started generating. If it didn't react, try a
+         * different method instead of carrying on (the old behaviour left the prompt unsent).
+         */
+        async submit(baseline, { kind, text = '', signal, timeout = 30000 }) {
+            const deadline = Date.now() + timeout;
+            const methods = ['click', 'enter', 'click'];
+            for (let i = 0; i < methods.length; i++) {
+                const last = i === methods.length - 1;
+                const result = await this.pressGenerate(methods[i], { text, signal, timeout: Math.max(1000, deadline - Date.now()) });
+                if (!result) continue;
+                const { button = null, how } = typeof result === 'string' ? { how: result } : result;
+                const windowMs = last ? Math.max(deadline - Date.now(), 3000) : Math.min(6000, Math.max(deadline - Date.now(), 3000));
+                const started = await this.waitForGenerationStart(baseline, { kind, button, promptSet: Boolean(text), timeout: windowMs, signal }).catch((e) => {
+                    if (e.code !== 'TIMEOUT') throw e;
+                    return null;
+                });
+                if (started) {
+                    this.debug(`Generation started (${started}) after ${how}`);
+                    return started;
+                }
+                if (!last) this.log('warn', `Flow did not start generating after ${how}; trying again`);
             }
+            throw new FlowError('Flow did not start generating: the Create button next to the prompt did not respond. Run Flow Diagnostics and check the "generateButton" selector.', {
+                code: 'UI_NOT_FOUND'
+            });
         }
 
         async ensureImageMode({ signal } = {}) {
@@ -202,8 +273,7 @@
                 videoEls: new WeakSet(videos),
                 videoKeys: new Set(videos.map((el) => this.mediaKey(el)).filter(Boolean)),
                 errors: new Set(this.currentErrors()),
-                progressCount: dom.findAll(this.sel('progressIndicator')).elements.length,
-                generateEnabled: dom.isEnabled(dom.findFirst(this.sel('generateButton')))
+                progressCount: dom.findAll(this.sel('progressIndicator')).elements.length
             };
         }
 
@@ -271,15 +341,22 @@
             return now ? `${now}%` : dom.normalizeText(el.innerText);
         }
 
-        waitForGenerationStart(baseline, { kind, timeout = 30000, signal } = {}) {
+        /**
+         * Signs that Flow accepted the submit: a new progress indicator or result, the clicked
+         * button turning disabled/removed, or (when we typed a prompt) the composer being cleared.
+         */
+        waitForGenerationStart(baseline, { kind, button = null, promptSet = false, timeout = 30000, signal } = {}) {
             return dom.waitForCondition(
                 () => {
                     this.throwIfFlowError(baseline);
                     if (dom.findAll(this.sel('progressIndicator')).elements.length > baseline.progressCount) return 'progress';
                     if (kind === 'image' && this.newImages(baseline).length) return 'result';
                     if (kind === 'video' && this.newVideos(baseline).length) return 'result';
-                    const btn = dom.findFirst(this.sel('generateButton'));
-                    if (baseline.generateEnabled && btn && !dom.isEnabled(btn)) return 'generate-disabled';
+                    if (button && (!button.isConnected || !dom.isEnabled(button))) return 'generate-disabled';
+                    if (promptSet) {
+                        const input = this.findPromptInput();
+                        if (input && !dom.normalizeText(dom.readInputText(input))) return 'prompt-cleared';
+                    }
                     return false;
                 },
                 { timeout, signal, interval: 500, message: 'Generation did not start after clicking Generate' }
@@ -323,8 +400,7 @@
             const baseline = this.snapshot();
             await this.setPrompt(prompt, { signal, timeout: elementTimeoutMs });
             onProgress?.('Prompt entered');
-            await this.clickGenerate({ signal, timeout: elementTimeoutMs });
-            await this.waitForGenerationStart(baseline, { kind: 'image', timeout: elementTimeoutMs, signal });
+            await this.submit(baseline, { kind: 'image', text: prompt, signal, timeout: elementTimeoutMs });
             onProgress?.('Image generation started');
 
             const images = await this.waitForStableMedia(
@@ -380,7 +456,7 @@
             dom.click(control);
             onProgress?.('Animate clicked');
 
-            let started = await this.waitForGenerationStart(baseline, { kind: 'video', timeout: 4000, signal }).catch((e) => {
+            const started = await this.waitForGenerationStart(baseline, { kind: 'video', timeout: 4000, signal }).catch((e) => {
                 if (e.code !== 'TIMEOUT') throw e;
                 return null;
             });
@@ -388,8 +464,7 @@
                 // The image went into the composer as a start frame: submit it.
                 const input = this.findPromptInput();
                 if (input && (prompt || dom.readInputText(input))) await this.setPrompt(prompt, { signal, timeout: elementTimeoutMs });
-                await this.clickGenerate({ signal, timeout: elementTimeoutMs });
-                started = await this.waitForGenerationStart(baseline, { kind: 'video', timeout: elementTimeoutMs, signal });
+                await this.submit(baseline, { kind: 'video', text: prompt, signal, timeout: elementTimeoutMs });
             }
             onProgress?.('Video generation started');
             const token = `pv-${++this.seq}`;
@@ -464,6 +539,20 @@
             cards.forEach((c) => dom.hover(c));
             const items = ns.DIAGNOSTIC_KEYS.map(([key, label]) => {
                 const media = key === 'generatedImage' || key === 'generatedVideo';
+                if (key === 'generateButton') {
+                    // Report the button a run would actually click (the composer's own).
+                    const button = this.findGenerateButton();
+                    const strategy = button && this.sel(key).find((s) => dom.queryStrategy(s).includes(button));
+                    return {
+                        key,
+                        label,
+                        found: Boolean(button),
+                        count: button ? 1 : 0,
+                        strategy: strategy ? dom.describeStrategy(strategy) : null,
+                        verified: Boolean(strategy?.verified),
+                        sample: button ? `${dom.describeElement(button)}${dom.isEnabled(button) ? '' : ' (disabled until a prompt is entered)'}` : null
+                    };
+                }
                 const elements = media ? this.collectMedia(key) : dom.findAll(this.sel(key)).elements;
                 let scoped = [];
                 let match = media || !elements.length ? null : dom.findAll(this.sel(key)).strategy;
@@ -488,9 +577,12 @@
                     sample: all[0] ? dom.describeElement(all[0]) : null
                 };
             });
+            const status = this.getStatus();
             return {
                 ...page,
                 authenticated: auth,
+                projectOpen: status.projectOpen,
+                projectName: status.projectName,
                 signInVisible: Boolean(dom.findFirst(this.sel('signInIndicator'))),
                 items,
                 errorsOnPage: this.currentErrors()

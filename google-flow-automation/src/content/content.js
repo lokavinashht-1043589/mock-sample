@@ -80,7 +80,9 @@
             case 'PING':
                 return { pong: true, url: location.href };
             case 'CHECK_READY':
-                return adapter.checkReady(opts);
+                return adapter.checkReady();
+            case 'GET_STATUS':
+                return adapter.getStatus();
             case 'DIAGNOSE':
                 return { ...adapter.diagnose(), selectorError };
             case 'GENERATE_IMAGE':

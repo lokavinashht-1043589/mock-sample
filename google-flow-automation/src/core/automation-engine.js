@@ -18,12 +18,23 @@ export class AuthRequiredError extends Error {
     }
 }
 
+export class ProjectRequiredError extends Error {
+    constructor(message = 'No project is open in Google Flow.') {
+        super(message);
+        this.name = 'ProjectRequiredError';
+        this.code = 'PROJECT_REQUIRED';
+    }
+}
+
+export const PROJECT_MESSAGE =
+    'No project is open in Google Flow.\n\nOpen (or create) a project in the Flow tab.\nAutomation will continue once the project is open.';
+
 export const AUTH_MESSAGE =
     'Google authentication is required.\n\nPlease log in to Google Flow manually.\nAutomation will continue after authentication.';
 
 /**
  * Central state machine. Talks to Google Flow ONLY through `adapter`, which must implement:
- *   checkReady()                          -> { ready, authenticated, reason? }
+ *   checkReady()                          -> { ready, authenticated, projectOpen?, reason? }
  *   generateImage(prompt, opts)           -> imageRef
  *   animateImage(imageRef, opts)          -> pendingVideoRef
  *   waitForVideo(pendingVideoRef, opts)   -> videoRef
@@ -138,7 +149,7 @@ export class FlowAutomationEngine {
      */
     async restore({ resume }) {
         const s = this.state.get();
-        const wasActive = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.STOPPING].includes(s.runStatus);
+        const wasActive = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.WAITING_PROJECT, RUN_STATUS.STOPPING].includes(s.runStatus);
 
         // A download that was already started may have finished while we were gone.
         for (const job of s.jobs) {
@@ -253,6 +264,10 @@ export class FlowAutomationEngine {
                     await this.waitForAuthentication();
                     continue; // does not consume a retry
                 }
+                if (error.code === 'PROJECT_REQUIRED') {
+                    await this.waitForProject();
+                    continue; // does not consume a retry
+                }
                 if (error.code === 'QUOTA_EXCEEDED') {
                     // Respect Flow's limits: don't burn retries, park the job and pause the run.
                     await this.state.updateJob(number, (j) => ({ ...resetJob(j, { keepRetries: true }), error: error.message }));
@@ -288,17 +303,42 @@ export class FlowAutomationEngine {
     }
 
     async waitForAuthentication() {
-        await this.state.update({ runStatus: RUN_STATUS.WAITING_AUTH, statusMessage: AUTH_MESSAGE });
-        this.logger.warn('Google authentication required — waiting for manual login');
-        this.emit('AUTOMATION_ERROR', { error: AUTH_MESSAGE, code: 'AUTH_REQUIRED' });
+        await this.waitForUser({
+            runStatus: RUN_STATUS.WAITING_AUTH,
+            message: AUTH_MESSAGE,
+            code: 'AUTH_REQUIRED',
+            waitingLog: 'Google authentication required — waiting for manual login',
+            isDone: (status) => status?.authenticated,
+            doneLog: 'Authentication detected — continuing',
+            doneMessage: 'Authenticated'
+        });
+    }
+
+    async waitForProject() {
+        await this.waitForUser({
+            runStatus: RUN_STATUS.WAITING_PROJECT,
+            message: PROJECT_MESSAGE,
+            code: 'PROJECT_REQUIRED',
+            waitingLog: 'No Flow project is open — waiting for the user to open one',
+            isDone: (status) => status?.projectOpen !== false,
+            doneLog: 'Flow project detected — continuing',
+            doneMessage: 'Connected to the Flow project'
+        });
+    }
+
+    /** Park the run until the user fixes something in the Flow tab (polls checkReady). */
+    async waitForUser({ runStatus, message, code, waitingLog, isDone, doneLog, doneMessage }) {
+        await this.state.update({ runStatus, statusMessage: message });
+        this.logger.warn(waitingLog);
+        this.emit('AUTOMATION_ERROR', { error: message, code });
         for (;;) {
             await this.sleep(this.authPollMs, this.abortController?.signal);
             if (this.stopRequested) throw new AbortedError('Stopped by user');
             const status = await this.adapter.checkReady().catch(() => null);
-            if (status?.authenticated) break;
+            if (status && isDone(status)) break;
         }
-        this.logger.info('Authentication detected — continuing');
-        await this.state.update({ runStatus: this.pauseRequested ? RUN_STATUS.PAUSING : RUN_STATUS.RUNNING, statusMessage: 'Authenticated' });
+        this.logger.info(doneLog);
+        await this.state.update({ runStatus: this.pauseRequested ? RUN_STATUS.PAUSING : RUN_STATUS.RUNNING, statusMessage: doneMessage });
     }
 
     // ───────────────────────────── one attempt ─────────────────────────────
@@ -310,6 +350,7 @@ export class FlowAutomationEngine {
 
         const ready = await this.adapter.checkReady({ signal });
         if (ready && ready.authenticated === false) throw new AuthRequiredError();
+        if (ready && ready.projectOpen === false) throw new ProjectRequiredError();
         if (ready && ready.ready === false) throw new Error(ready.reason || 'Google Flow is not ready');
 
         if (this.downloads?.assertOutputAvailable) await this.downloads.assertOutputAvailable(job);

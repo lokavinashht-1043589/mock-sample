@@ -73,7 +73,7 @@ function broadcast(type, payload = {}) {
 // (download waits, delays). It is the pattern documented for MV3 long-running work.
 let keepAliveTimer = null;
 stateManager.subscribe((state) => {
-    const active = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.STOPPING].includes(state.runStatus);
+    const active = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.WAITING_PROJECT, RUN_STATUS.STOPPING].includes(state.runStatus);
     if (active && !keepAliveTimer) keepAliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(), 20_000);
     if (!active && keepAliveTimer) {
         clearInterval(keepAliveTimer);
@@ -103,6 +103,20 @@ async function init() {
 }
 
 // ───────────────────── message handling ─────────────────────
+
+const isFlowReady = (flow) => Boolean(flow?.connected && flow.authenticated !== false && flow.projectOpen && flow.promptFound);
+
+function describeFlowStatus(flow) {
+    if (!flow?.connected) {
+        if (flow?.noTab) return 'Google Flow is not open. Open Google Flow and open (or create) a project, then press Start.';
+        if (flow?.authRequired) return 'Sign in to Google Flow in its tab, open a project, then press Start.';
+        return `Can't reach the Google Flow tab: ${flow?.reason || 'unknown error'}`;
+    }
+    if (flow.authenticated === false) return 'Sign in to Google Flow in its tab, open a project, then press Start.';
+    if (!flow.projectOpen) return 'Google Flow is open, but no project is. Open (or create) a project in Flow, then press Start.';
+    if (!flow.promptFound) return "The Flow project is open but its prompt box wasn't found yet. Wait for it to load, then press Start.";
+    return 'Connected to your Flow project.';
+}
 
 function snapshot() {
     const state = stateManager.get();
@@ -148,6 +162,9 @@ async function handleMessage(message) {
             if (!getNextJob(stateManager.get().jobs)) {
                 return { started: false, parse: parseResponse(result), note: 'Every job is already completed. Use "Reset queue" to run them again.' };
             }
+            // Only start creating once the user has a Flow project open (they open it themselves).
+            const flow = await adapter.getStatus().catch((e) => ({ connected: false, reason: e.message }));
+            if (!isFlowReady(flow)) return { started: false, parse: parseResponse(result), flow, note: describeFlowStatus(flow) };
             await engine.start({ scope: null });
             return { started: true, parse: parseResponse(result) };
         }
@@ -187,6 +204,15 @@ async function handleMessage(message) {
             if (!engine.isRunning) await engine.start({ scope: { numbers: [number] } });
             return {};
         }
+
+        case MSG.GET_FLOW_STATUS:
+            // While a run owns the tab, don't switch tabs or inject scripts from a popup poll.
+            if (engine.isRunning) return { flow: { connected: true, running: true } };
+            return { flow: await adapter.getStatus().catch((e) => ({ connected: false, reason: e.message })) };
+
+        case MSG.OPEN_FLOW:
+            await connection.focusFlowTab();
+            return {};
 
         case MSG.RUN_DIAGNOSTICS:
             logger.info('Running Flow diagnostics');

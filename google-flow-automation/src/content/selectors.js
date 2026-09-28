@@ -35,14 +35,6 @@
             { aria: '^Google Account' },
             { css: 'img[alt*="profile" i]' }
         ],
-        enterWorkspaceButton: [
-            { aria: '^Create with Google Flow$', verified: true, note: 'Landing page CTA (flow.google.com/about)' },
-            { text: '^\\s*(New project|Create with Google Flow)\\s*$', tag: 'button,a' }
-        ],
-        newProjectButton: [
-            { aria: 'new project' },
-            { text: '^\\s*(add_2\\s*)?New project\\s*$', tag: 'button,a' }
-        ],
 
         // ── image mode (optional; skipped if not found) ──────────────────────
         imageModeTrigger: [
@@ -62,9 +54,12 @@
             { css: '[contenteditable="true"][role="textbox"]' },
             { css: '[contenteditable="true"]' }
         ],
+        // Searched outward from the prompt box first (see FlowAdapter.findGenerateButton): the
+        // page has other "Create…" buttons, and a page-wide first match clicked the wrong one.
         generateButton: [
+            { text: '^\\s*arrow_forward', tag: 'button,[role="button"]', note: 'Composer submit: arrow icon (+ "Create" label)' },
             { aria: '^\\s*(create|generate|send|submit|run)\\b' },
-            { text: '^\\s*arrow_forward', tag: 'button' },
+            { text: '^\\s*(create|generate|send|submit)\\s*$', tag: 'button,[role="button"]' },
             { css: 'button[type="submit"]' }
         ],
 

@@ -15,6 +15,15 @@
         <button id="openOptions" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
     </header>
 
+    <section class="flow-status" id="flowStatus" data-state="checking" aria-live="polite" aria-label="Google Flow connection">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="flow-text">
+            <strong id="flowTitle">Checking Google Flow…</strong>
+            <span id="flowDetail"></span>
+        </div>
+        <button id="btnOpenFlow" class="btn small" hidden>Open Google Flow</button>
+    </section>
+
     <section class="panel control-panel" aria-label="Progress and controls">
         <div class="progress-row">
             <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">

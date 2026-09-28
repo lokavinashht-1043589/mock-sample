@@ -240,9 +240,43 @@
 
     // ── pointer ──────────────────────────────────────────────────────────
 
+    /**
+     * Plain-text paste into a rich (contenteditable) editor. Editors like Slate/Lexical keep their
+     * own model and may ignore execCommand/textContent changes, but they all handle paste.
+     */
+    function pasteText(el, text) {
+        el.focus();
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const data = new DataTransfer();
+        data.setData('text/plain', text);
+        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }
+
+    function pressKey(el, key, code = key) {
+        const keyCode = { Enter: 13, ' ': 32, End: 35 }[key] || 0;
+        for (const type of ['keydown', 'keypress', 'keyup']) {
+            el.dispatchEvent(new KeyboardEvent(type, { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true }));
+        }
+    }
+
     function pointerInit(el) {
         const r = el.getBoundingClientRect();
-        return { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, view: window };
+        return {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            clientX: r.left + r.width / 2,
+            clientY: r.top + r.height / 2,
+            view: window,
+            button: 0,
+            pointerId: 1,
+            pointerType: 'mouse',
+            isPrimary: true
+        };
     }
 
     function hover(el) {
@@ -257,9 +291,11 @@
     function click(el) {
         if (!el) throw new Error('Cannot click: element missing');
         el.scrollIntoView({ block: 'center', inline: 'center' });
+        hover(el);
         const init = pointerInit(el);
-        el.dispatchEvent(new PointerEvent('pointerdown', init));
-        el.dispatchEvent(new MouseEvent('mousedown', init));
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 }));
+        el.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }));
+        el.focus?.({ preventScroll: true });
         el.dispatchEvent(new PointerEvent('pointerup', init));
         el.dispatchEvent(new MouseEvent('mouseup', init));
         el.click();
@@ -299,6 +335,8 @@
         readInputText,
         setNativeValue,
         replaceText,
+        pasteText,
+        pressKey,
         hover,
         click,
         describeElement

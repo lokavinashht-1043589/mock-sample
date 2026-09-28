@@ -28,10 +28,24 @@
             summary: null
         };
         const stats = { total: 4, completed: 1, failed: 1, pending: 1, active: 1, current: 2, done: 2 };
+        // ?running=0 previews the idle popup; ?flow=notab|signin|noproject|ready picks the Flow state.
+        // window.setFlow('ready') switches it live (as if the user just opened a project).
+        const params = new URLSearchParams(location.search);
+        const running = params.get('running') !== '0';
+        if (!running) Object.assign(state, { runStatus: 'idle', currentJobNumber: null, statusMessage: 'Ready' });
+        const FLOWS = {
+            notab: { connected: false, noTab: true, reason: 'No Google Flow tab is open' },
+            signin: { connected: true, authenticated: false, projectOpen: false, promptFound: false },
+            noproject: { connected: true, authenticated: true, projectOpen: false, promptFound: false },
+            ready: { connected: true, authenticated: true, projectOpen: true, projectName: 'Product teaser', promptFound: true }
+        };
+        let flow = FLOWS[params.get('flow') || 'noproject'];
+        window.setFlow = (name) => (flow = FLOWS[name]);
         globalThis.chrome = {
             runtime: {
                 sendMessage: async (msg) => {
-                    if (msg.type === 'GET_STATE') return { ok: true, state, stats, running: true, settings: { debugMode: true } };
+                    if (msg.type === 'GET_STATE') return { ok: true, state, stats, running, settings: { debugMode: true } };
+                    if (msg.type === 'GET_FLOW_STATUS') return { ok: true, flow: running ? { connected: true, running: true } : flow };
                     if (msg.type === 'GET_LOGS') return { ok: true, entries: [{ t: Date.now(), level: 'info', message: 'Automation started' }, { t: Date.now(), level: 'warn', message: 'Job 4 error at "Generating video": Video generation timed out' }], text: '' };
                     return { ok: true };
                 },

@@ -6,6 +6,7 @@ export const RUN_STATUS = Object.freeze({
     PAUSING: 'pausing', // pause requested, finishing current job
     PAUSED: 'paused',
     WAITING_AUTH: 'waiting_auth',
+    WAITING_PROJECT: 'waiting_project', // no Flow project open; waiting for the user to open one
     STOPPING: 'stopping',
     STOPPED: 'stopped',
     COMPLETED: 'completed',

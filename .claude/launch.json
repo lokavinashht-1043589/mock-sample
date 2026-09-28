@@ -5,7 +5,8 @@
       "name": "adapter-harness",
       "runtimeExecutable": "node",
       "runtimeArgs": ["google-flow-automation/scripts/serve.mjs"],
-      "port": 8787
+      "port": 8787,
+      "autoPort": true
     }
   ]
 }

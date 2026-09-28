@@ -18,6 +18,7 @@ const RUN_LABELS = {
     pausing: 'Pausing…',
     paused: 'Paused',
     waiting_auth: 'Login needed',
+    waiting_project: 'Open a project',
     stopping: 'Stopping…',
     stopped: 'Stopped',
     completed: 'Complete',
@@ -74,7 +75,8 @@ function render() {
 
     const running = view.running;
     const hasRunnable = state.jobs.some((j) => j.status === 'pending' || j.status === 'paused');
-    $('btnStart').disabled = running;
+    $('btnStart').disabled = running || !flowReady;
+    $('btnStart').title = running || flowReady ? '' : 'Open a project in Google Flow first';
     $('btnPause').disabled = !running || runStatus === 'pausing' || runStatus === 'stopping';
     $('btnResume').disabled = running ? runStatus !== 'pausing' : !hasRunnable || !['paused', 'stopped', 'error', 'idle'].includes(runStatus) || state.jobs.length === 0;
     $('btnStop').disabled = !running && runStatus !== 'paused';
@@ -195,6 +197,7 @@ function renderDiagnostics(d) {
     }
     row('Flow page detected', d.isFlowPage, d.isFlowPage ? d.url : `Unexpected page: ${d.url}`);
     row('Authentication detected', d.authenticated === true ? true : d.authenticated === false ? false : null, d.authenticated === false ? 'Sign-in link is visible — log in manually.' : d.authenticated === null ? 'Could not tell (no prompt box or account menu found).' : null);
+    row('Project open', Boolean(d.projectOpen), d.projectOpen ? d.projectName : 'Open or create a project in Google Flow.');
     for (const item of d.items) {
         const reason = item.found
             ? `${item.count} match${item.count === 1 ? '' : 'es'} via ${item.strategy || 'media scan'}${item.verified ? ' (verified selector)' : ''}`
@@ -204,6 +207,54 @@ function renderDiagnostics(d) {
     if (d.errorsOnPage?.length) row('Error messages on page', false, d.errorsOnPage.join('\n'));
     if (d.selectorError) row('Selector overrides', false, d.selectorError);
     box.replaceChildren(...rows);
+}
+
+// ───────────────────────────── Google Flow connection ─────────────────────────────
+// The user opens (or creates) the project in Flow themselves; Start unlocks once one is open.
+
+let flowReady = false;
+let flowPolling = false;
+
+function describeFlow(flow) {
+    if (view.running || flow?.running) return { state: 'ready', title: 'Running in your Flow project', detail: 'Keep the Flow tab open until the queue finishes.' };
+    if (!flow) return { state: 'checking', title: 'Checking Google Flow…', detail: '' };
+    if (!flow.connected) {
+        if (flow.noTab) return { state: 'waiting', title: 'Google Flow is not open', detail: 'Open Google Flow, then open or create a project.', action: 'Open Google Flow' };
+        if (flow.authRequired) return { state: 'waiting', title: 'Sign in to Google Flow', detail: 'Log in manually in the Flow tab, then open a project.', action: 'Show Flow tab' };
+        return { state: 'error', title: "Can't reach the Flow tab", detail: flow.reason || 'Try reloading the Flow tab.', action: 'Show Flow tab' };
+    }
+    if (flow.authenticated === false) return { state: 'waiting', title: 'Sign in to Google Flow', detail: 'Log in manually in the Flow tab, then open a project.', action: 'Show Flow tab' };
+    if (!flow.projectOpen) return { state: 'waiting', title: 'Open a project in Google Flow', detail: 'Flow is open. Open an existing project or create a new one there.', action: 'Show Flow tab' };
+    if (!flow.promptFound) return { state: 'checking', title: 'Project is loading…', detail: 'Waiting for the Flow prompt box to appear.' };
+    const name = flow.projectName ? `“${flow.projectName}”` : 'your project';
+    return { state: 'ready', title: `Connected to ${name}`, detail: 'Ready. Click Start to begin creating.', ready: true };
+}
+
+function renderFlow(flow) {
+    const d = describeFlow(flow);
+    const wasReady = flowReady;
+    flowReady = Boolean(d.ready);
+    $('flowStatus').dataset.state = d.state;
+    $('flowTitle').textContent = d.title;
+    $('flowDetail').textContent = d.detail;
+    $('btnOpenFlow').hidden = !d.action;
+    if (d.action) $('btnOpenFlow').textContent = d.action;
+    if (view.state) render();
+    if (flowReady && !wasReady && !view.running) setStatus('Connected to your Google Flow project — click Start to begin creating.');
+}
+
+async function pollFlow() {
+    if (flowPolling) return;
+    flowPolling = true;
+    try {
+        // Not via send(): a failed background poll shouldn't overwrite the status line.
+        const response = await chrome.runtime.sendMessage({ type: MSG.GET_FLOW_STATUS });
+        renderFlow(response?.ok ? response.flow : { connected: false, reason: response?.error });
+    } catch (error) {
+        renderFlow({ connected: false, reason: error.message });
+    } finally {
+        flowPolling = false;
+    }
 }
 
 // ───────────────────────────── events ─────────────────────────────
@@ -270,6 +321,11 @@ function bind() {
         }
         const res = await send(MSG.START_QUEUE, { text });
         if (!res.started) {
+            if (res.flow) {
+                renderFlow(res.flow);
+                if (res.note) setStatus(res.note);
+                return;
+            }
             showValidation(res.parse || local, res.note);
             return;
         }
@@ -322,6 +378,11 @@ function bind() {
         }
     });
 
+    $('btnOpenFlow').addEventListener('click', async () => {
+        await send(MSG.OPEN_FLOW).catch(() => {});
+        pollFlow();
+    });
+
     chrome.runtime.onMessage.addListener((message) => {
         if (message?.type === MSG.QUEUE_UPDATE) {
             view = { ...view, state: message.state, stats: message.stats, running: message.running };
@@ -337,4 +398,6 @@ function bind() {
     await refresh();
     $('prompts').value = view.state?.promptsText || '';
     if (view.state?.jobs.length) switchTab('queue');
+    pollFlow();
+    setInterval(pollFlow, 2500);
 })();

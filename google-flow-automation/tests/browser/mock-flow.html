@@ -30,6 +30,8 @@
     <header style="padding: 8px 16px">
         <a href="#" aria-label="Google Account" style="color:#9cf">Account</a>
         <button class="mode" role="combobox" aria-label="Mode: Text to Video" id="mode">Text to Video</button>
+        <!-- Decoy: other "Create…" controls exist outside the composer on the real site. -->
+        <button id="decoy" aria-label="Create new collection">add</button>
     </header>
     <main id="grid">
         <div class="card"><img alt="old result" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='200'><rect width='280' height='200' fill='%23444'/></svg>" /></div>
@@ -37,7 +39,8 @@
     <div class="composer">
         <div class="frame" id="frame"></div>
         <textarea id="PINHOLE_TEXT_AREA_ELEMENT_ID" placeholder="What do you want to create?"></textarea>
-        <button id="create" aria-label="Create"><i>arrow_forward</i></button>
+        <!-- Like the real Flow composer: icon + label, no aria-label, disabled until the prompt registers. -->
+        <button id="create" disabled><i>arrow_forward</i><span>Create</span></button>
     </div>
 
     <script>
@@ -47,7 +50,12 @@
         const createBtn = document.getElementById('create');
         const modeBtn = document.getElementById('mode');
         const frame = document.getElementById('frame');
-        window.mock = { submissions: [], mode: 'Text to Video', downloads: [], startFrame: null, failNext: null };
+        window.mock = { submissions: [], mode: 'Text to Video', downloads: [], startFrame: null, failNext: null, decoyClicks: 0, busy: false };
+        document.getElementById('decoy').addEventListener('click', () => window.mock.decoyClicks++);
+
+        // The app only enables Create once its own state has seen the text (a beat after input).
+        const syncCreate = () => { createBtn.disabled = window.mock.busy || !(input.value.trim() || window.mock.startFrame); };
+        input.addEventListener('input', () => setTimeout(syncCreate, 300));
 
         modeBtn.addEventListener('click', () => {
             const menu = document.createElement('div');
@@ -128,11 +136,13 @@
         createBtn.addEventListener('click', async () => {
             const prompt = input.value;
             window.mock.submissions.push({ prompt, mode: window.mock.mode, frame: Boolean(window.mock.startFrame) });
+            window.mock.busy = true;
             createBtn.disabled = true;
+            input.value = ''; // Flow clears the composer after submitting
             const { card, done } = progressCard();
             if (window.mock.failNext) {
                 const msg = window.mock.failNext; window.mock.failNext = null;
-                setTimeout(() => { done(); card.remove(); toast(msg); createBtn.disabled = false; }, 400);
+                setTimeout(() => { done(); card.remove(); toast(msg); window.mock.busy = false; syncCreate(); }, 400);
                 return;
             }
             const isVideo = Boolean(window.mock.startFrame);
@@ -176,11 +186,13 @@
                         window.mock.startFrame = img.src; // image becomes start frame; user must submit
                         frame.style.backgroundImage = `url(${img.src})`;
                         frame.style.display = 'block';
+                        syncCreate();
                     });
                     actions.append(animate);
                 }
                 card.append(actions);
-                createBtn.disabled = false;
+                window.mock.busy = false;
+                syncCreate();
             }, isVideo ? 1500 : 1200);
         });
     </script>
