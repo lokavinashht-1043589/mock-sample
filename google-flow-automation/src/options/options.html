@@ -34,10 +34,22 @@
             </fieldset>
 
             <fieldset>
+                <legend>Save location</legend>
+                <p class="save-path">Videos are saved to <code id="savePath">…</code></p>
+                <small id="savePathNote"></small>
+                <label>Subfolder <input type="text" id="downloadSubfolder" placeholder="(none — straight into Chrome's download folder)" maxlength="120" />
+                    <small>Created inside Chrome's download folder, e.g. <code>Flow videos/batch 1</code>.</small>
+                </label>
+                <div class="row">
+                    <button type="button" id="btnChromeFolder" class="btn">Change Chrome's download folder…</button>
+                </div>
+                <small>Chrome only lets extensions save inside its download folder. To use another folder or drive (for example <code>D:\Videos</code>): click the button, press <b>Change</b> next to <b>Location</b>, pick the folder, and come back. On that page, also turn off <b>Ask where to save each file before downloading</b>, or every video will ask.</small>
+            </fieldset>
+
+            <fieldset>
                 <legend>Output files</legend>
                 <div class="grid">
                     <label>Filename prefix <input type="text" id="filenamePrefix" placeholder="(empty)" maxlength="60" /></label>
-                    <label>Download subfolder <input type="text" id="downloadSubfolder" placeholder="(Downloads root)" maxlength="120" /></label>
                 </div>
                 <p class="preview">Example output: <code id="filenamePreview">1.mp4</code></p>
                 <div class="radio-group" role="radiogroup" aria-label="Duplicate file behavior">

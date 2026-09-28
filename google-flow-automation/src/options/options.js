@@ -50,6 +50,39 @@ function updatePreview() {
     const s = read();
     const names = [1, 2, 10].map((n) => withSubfolder(getOutputFilename({ number: n }, 'mp4', { prefix: s.filenamePrefix }), s.downloadSubfolder));
     $('filenamePreview').textContent = names.join(', ');
+    renderSavePath(s);
+}
+
+// ── save location ──
+// Extensions can't read Chrome's download folder directly; it is learned from the last video
+// the extension saved (service worker stores it), or guessed from Chrome's latest download.
+let downloadRoot = null;
+let rootIsGuess = false;
+
+async function loadDownloadRoot() {
+    downloadRoot = (await chrome.storage.local.get(STORAGE_KEYS.DOWNLOAD_ROOT))[STORAGE_KEYS.DOWNLOAD_ROOT] || null;
+    rootIsGuess = false;
+    if (!downloadRoot) {
+        const [latest] = await chrome.downloads.search({ orderBy: ['-startTime'], state: 'complete', limit: 1 }).catch(() => []);
+        const path = latest?.filename || '';
+        const cut = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+        if (cut > 0) {
+            downloadRoot = path.slice(0, cut);
+            rootIsGuess = true;
+        }
+    }
+    renderSavePath(read());
+}
+
+function renderSavePath(s) {
+    const sep = downloadRoot?.includes('/') && !downloadRoot.includes('\\') ? '/' : '\\';
+    const rel = withSubfolder(getOutputFilename({ number: 1 }, 'mp4', { prefix: s.filenamePrefix }), s.downloadSubfolder).split('/').join(sep);
+    $('savePath').textContent = downloadRoot ? `${downloadRoot}${sep}${rel}` : `<Chrome's download folder>${sep}${rel}`;
+    $('savePathNote').textContent = !downloadRoot
+        ? 'The exact folder is shown here after the first video is saved.'
+        : rootIsGuess
+          ? "Folder taken from Chrome's most recent download; confirmed after the first video is saved."
+          : 'If you change Chrome\'s download folder, this updates after the next video is saved.';
 }
 
 function checkOverrides() {
@@ -96,6 +129,11 @@ async function save(event) {
     const stored = (await chrome.storage.local.get(STORAGE_KEYS.SETTINGS))[STORAGE_KEYS.SETTINGS];
     fill(normalizeSettings(stored));
     $('form').addEventListener('submit', save);
+    $('btnChromeFolder').addEventListener('click', () => chrome.tabs.create({ url: 'chrome://settings/downloads' }));
+    loadDownloadRoot();
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes[STORAGE_KEYS.DOWNLOAD_ROOT]) loadDownloadRoot();
+    });
     $('form').addEventListener('input', updatePreview);
     $('selectorOverrides').addEventListener('input', checkOverrides);
     $('btnDefaults').addEventListener('click', () => {

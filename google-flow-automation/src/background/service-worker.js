@@ -28,7 +28,13 @@ const connection = new FlowConnection({
     onTabChanged: (tabId) => stateManager.update({ flowTabId: tabId }, { immediate: false })
 });
 const adapter = new RemoteFlowAdapter(connection, getSettings);
-const downloadManager = new DownloadManager({ api: chrome.downloads, getSettings, logger, extensionId: chrome.runtime.id });
+const downloadManager = new DownloadManager({
+    api: chrome.downloads,
+    getSettings,
+    logger,
+    extensionId: chrome.runtime.id,
+    onDownloadRoot: (root) => chrome.storage.local.set({ [STORAGE_KEYS.DOWNLOAD_ROOT]: root })
+});
 const engine = new FlowAutomationEngine({ stateManager, adapter, downloadManager, logger, getSettings, emit: broadcast });
 
 // ───────────────────── top-level listeners (MV3 needs these registered synchronously) ─────────────────────

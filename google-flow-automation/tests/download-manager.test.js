@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DownloadManager } from '../src/core/download-manager.js';
+import { DownloadManager, downloadRoot } from '../src/core/download-manager.js';
 import { Logger } from '../src/core/logger.js';
 import { normalizeSettings } from '../src/core/settings.js';
 import { FakeDownloads, EXT_ID } from './mocks/fake-downloads.js';
 
-function make({ settings = {}, downloads = new FakeDownloads() } = {}) {
+function make({ settings = {}, downloads = new FakeDownloads(), onDownloadRoot = null } = {}) {
     const s = normalizeSettings(settings);
     const logger = new Logger({ debugMode: true });
-    const dm = new DownloadManager({ api: downloads, getSettings: () => s, logger, extensionId: EXT_ID, pollMs: 5, nativeClaimTimeoutMs: 200 });
+    const dm = new DownloadManager({ api: downloads, getSettings: () => s, logger, extensionId: EXT_ID, pollMs: 5, nativeClaimTimeoutMs: 200, onDownloadRoot });
     downloads.determine = (item, suggest) => dm.handleDeterminingFilename(item, suggest);
     return { dm, downloads, logger };
 }
@@ -117,4 +117,19 @@ test('native download: an unrelated download from another site is not claimed', 
 test('generateFilename uses prefix', () => {
     const { dm } = make({ settings: { filenamePrefix: 'flow_' } });
     assert.equal(dm.generateFilename({ number: 10 }, 'mp4'), 'flow_10.mp4');
+});
+
+test('downloadRoot: Chrome download folder = saved path minus the relative target', () => {
+    assert.equal(downloadRoot('D:\\Videos\\flow\\1.mp4', 'flow/1.mp4'), 'D:\\Videos');
+    assert.equal(downloadRoot('C:\\Users\\me\\Downloads\\1.mp4', '1.mp4'), 'C:\\Users\\me\\Downloads');
+    assert.equal(downloadRoot('/home/me/Downloads/a/b/2.webm', 'a/b/2.webm'), '/home/me/Downloads');
+    assert.equal(downloadRoot('D:\\Videos\\1 (1).mp4', '1.mp4'), null, 'renamed by Chrome -> unknown');
+});
+
+test('reports the download folder after a video is saved (for the Settings page)', async () => {
+    const roots = [];
+    const { dm } = make({ settings: { downloadSubfolder: 'Flow videos' }, onDownloadRoot: (r) => roots.push(r) });
+    await dm.downloadVideo({ url: 'https://media.test/abc' }, { number: 3 }, { timeoutMs: 1000 });
+    assert.equal(roots.length, 1);
+    assert.ok(!/Flow videos/.test(roots[0]) && roots[0].length > 0, roots[0]);
 });

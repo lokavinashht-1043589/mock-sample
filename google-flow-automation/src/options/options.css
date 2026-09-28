@@ -42,3 +42,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb
 .ok { color: var(--ok); }
 .err { color: var(--err); }
 @media (max-width: 480px) { main { padding: 16px; } }
+
+.save-path { margin: 0 0 2px; }
+.save-path code { word-break: break-all; }

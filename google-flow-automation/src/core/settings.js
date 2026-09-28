@@ -56,5 +56,6 @@ export const STORAGE_KEYS = Object.freeze({
     SETTINGS: 'gfa.settings',
     STATE: 'gfa.state',
     LOGS: 'gfa.logs',
+    DOWNLOAD_ROOT: 'gfa.downloadRoot', // Chrome's download folder, learned from our last saved video
     SESSION_MARKER: 'gfa.sessionAlive' // chrome.storage.session
 });

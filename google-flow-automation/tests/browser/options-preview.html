@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Options preview (stubbed chrome.*)</title>
+    <link rel="stylesheet" href="../../src/options/options.css" />
+</head>
+<body>
+    <!-- Renders the real options markup + options.js against fake chrome.* APIs, for visual checks.
+         ?root=0 previews the state before any video was saved. -->
+    <script type="module">
+        const html = await (await fetch('../../src/options/options.html')).text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('script').forEach((s) => s.remove());
+        document.body.replaceChildren(...doc.body.childNodes);
+
+        const knownRoot = new URLSearchParams(location.search).get('root') !== '0';
+        const store = {
+            'gfa.settings': { downloadSubfolder: 'Flow videos' },
+            ...(knownRoot ? { 'gfa.downloadRoot': 'D:\\Videos' } : {})
+        };
+        window.opened = [];
+        globalThis.chrome = {
+            storage: {
+                local: {
+                    get: async (key) => ({ [key]: store[key] }),
+                    set: async (items) => Object.assign(store, items)
+                },
+                onChanged: { addListener() {} }
+            },
+            downloads: { search: async () => [{ filename: 'C:\\Users\\me\\Downloads\\report.pdf' }] },
+            tabs: { create: async ({ url }) => window.opened.push(url) }
+        };
+        await import('../../src/options/options.js');
+    </script>
+</body>
+</html>

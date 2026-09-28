@@ -25,8 +25,9 @@ const basename = (p) => String(p || '').split(/[\\/]/).pop();
  * `api` is chrome.downloads (or a fake in tests): { download, search, cancel, onChanged }.
  */
 export class DownloadManager {
-    constructor({ api, getSettings, logger, extensionId, pollMs = 2000, nativeClaimTimeoutMs = 60_000 }) {
+    constructor({ api, getSettings, logger, extensionId, pollMs = 2000, nativeClaimTimeoutMs = 60_000, onDownloadRoot = null }) {
         this.api = api;
+        this.onDownloadRoot = onDownloadRoot; // (absolutePath) => void — Chrome's download folder, for Settings
         this.getSettings = getSettings;
         this.logger = logger;
         this.extensionId = extensionId;
@@ -102,6 +103,10 @@ export class DownloadManager {
             }
             const item = await this.verifyDownload(downloadId);
             const filename = basename(item.filename);
+            if (this.pending.target) {
+                const root = downloadRoot(item.filename, this.pending.target);
+                if (root) this.onDownloadRoot?.(root);
+            }
             const target = this.pending.target ? basename(this.pending.target) : null;
             if (target && filename !== target) {
                 this.logger.warn(`Chrome saved "${filename}" instead of "${target}" because a file with that name already existed on disk (it was NOT overwritten)`);
@@ -210,6 +215,19 @@ export class DownloadManager {
         if (item && item.state === 'complete' && item.exists !== false) return { filename: basename(item.filename) };
         return null;
     }
+}
+
+/**
+ * Chrome's download folder = the saved file's absolute path minus the relative path we asked
+ * for (D:\Videos\flow\1.mp4 minus flow/1.mp4 -> D:\Videos). Null if they don't line up
+ * (e.g. Chrome renamed the file to "1 (1).mp4").
+ */
+export function downloadRoot(absolutePath, relativeTarget) {
+    const abs = String(absolutePath || '');
+    const sep = abs.includes('\\') ? '\\' : '/';
+    const rel = String(relativeTarget || '').split('/').join(sep);
+    if (!rel || !abs.toLowerCase().endsWith(sep + rel.toLowerCase())) return null;
+    return abs.slice(0, abs.length - rel.length - 1);
 }
 
 function safeHost(url) {
