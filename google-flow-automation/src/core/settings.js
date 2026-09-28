@@ -9,7 +9,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     videoGenerationTimeoutMs: 10 * 60 * 1000,
     downloadTimeoutMs: 5 * 60 * 1000,
     elementTimeoutMs: 30 * 1000,
-    delayBetweenJobsMs: 5 * 1000,
+    delayBetweenJobsMs: 0, // pause after a prompt reaches 100% before typing the next one
     filenamePrefix: '',
     downloadSubfolder: '',
     duplicateBehavior: 'prevent', // prevent | suffix | overwrite

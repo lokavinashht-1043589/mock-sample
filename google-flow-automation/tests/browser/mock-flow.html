@@ -17,6 +17,7 @@
         - later results can be collapsed behind an inline "Show 1 Videos" button
         - a finished tile keeps its "100%" progress label on screen for a while
         - the next prompt is accepted at 100%; the playable video appears ~3s later in the same tile
+        - the results + prompt box live in a chat panel that is itself role="dialog" (open all along)
     -->
     <style>
         body { font: 14px system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
@@ -41,6 +42,8 @@
         <!-- Decoy: other "Create…" controls exist outside the composer on the real site. -->
         <button id="decoy" aria-label="Create new collection">add</button>
     </header>
+    <!-- Flow's chat side panel may itself be a dialog, open the whole time: it is the workspace. -->
+    <section id="panel" role="dialog" aria-label="Chat panel">
     <main id="grid">
         <div class="card"><video muted aria-label="old result" src="data:video/mp4;base64,AAAA"></video></div>
     </main>
@@ -52,6 +55,7 @@
         <!-- Right-pointing arrow ICON only (SVG, no text, no aria-label), disabled until the prompt registers. -->
         <button id="create" class="icon" disabled><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4l-1.4 1.4L16.2 11H4v2h12.2l-5.6 5.6L12 20l8-8z" fill="currentColor"/></svg></button>
     </div>
+    </section>
 
     <script>
         // ---- mock app behaviour -------------------------------------------------

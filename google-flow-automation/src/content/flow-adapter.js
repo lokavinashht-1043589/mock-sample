@@ -13,6 +13,7 @@
     const POLICY_PATTERN = '(policy|violat|not allowed|unsafe|prohibited|guidelines)';
     const QUOTA_PATTERN = '(quota|limit reached|daily limit|rate limit|too many requests|out of credits|insufficient credits|no credits)';
     const STABILITY_MS = 2000;
+    const DIALOG_SELECTOR = '[role="dialog"],[aria-modal="true"]';
     const PROGRESS_GRACE_MS = 45000; // max wait for a lingering progress indicator once the video is there
 
     class FlowError extends Error {
@@ -111,24 +112,39 @@
             if (!status.promptFound) {
                 return { ...status, ready: false, reason: 'The Flow project is open but its prompt box was not found (still loading, or update the "promptInput" selector — run Flow Diagnostics).' };
             }
+            this.rememberHome(); // first time Flow is ready: this is the workspace the run uses
             return { ...status, ready: true };
         }
 
         // ── prompt ───────────────────────────────────────────────────────
-        /** The project's main prompt box — never the one inside an opened result viewer/dialog. */
+        /** The project's main prompt box — never the one inside a result viewer that opened during the run. */
         findPromptInput() {
-            return dom.findFirst(this.sel('promptInput'), { filter: (el) => dom.isEnabled(el) && !el.readOnly && !this.inOverlay(el) });
+            const usable = (el) => dom.isEnabled(el) && !el.readOnly;
+            return (
+                dom.findFirst(this.sel('promptInput'), { filter: (el) => usable(el) && !this.inOverlay(el) }) ||
+                // Before the workspace is known, a prompt box inside a panel/dialog is still the one to use.
+                (this.homeOverlays ? null : dom.findFirst(this.sel('promptInput'), { filter: usable }))
+            );
+        }
+
+        /**
+         * Viewers are dialogs that opened DURING the run. Panels that were already open when the
+         * run started (Flow's chat side panel may be a dialog) are part of the workspace: never
+         * closed, and their prompt box and videos are used normally.
+         */
+        isViewer(dialog) {
+            return !this.homeOverlays?.has(dialog);
         }
 
         inOverlay(el) {
-            return Boolean(el.closest('[role="dialog"],[aria-modal="true"]'));
+            const dialog = el.closest(DIALOG_SELECTOR);
+            return Boolean(dialog) && this.isViewer(dialog);
         }
 
         async setPrompt(text, { signal, timeout = 30000 } = {}) {
-            const input = await dom.waitForElement(this.sel('promptInput'), {
+            const input = await dom.waitForCondition(() => this.findPromptInput(), {
                 timeout,
                 signal,
-                filter: (el) => dom.isEnabled(el) && !el.readOnly && !this.inOverlay(el),
                 message: 'Prompt input not found (selector "promptInput")'
             });
             for (let attempt = 1; attempt <= 2; attempt++) {
@@ -533,7 +549,9 @@
             if (this.homePath) return;
             const project = location.pathname.match(/^(.*\/project\/[^/?#]+)/);
             this.homePath = project ? project[1] : location.pathname.replace(/\/$/, '');
-            this.debug(`Working in ${this.homePath}`);
+            const panels = [...document.querySelectorAll(DIALOG_SELECTOR)].filter((el) => dom.isVisible(el));
+            this.homeOverlays = new WeakSet(panels);
+            this.debug(`Working in ${this.homePath}${panels.length ? ` (${panels.length} panel(s) already open are part of the workspace)` : ''}`);
         }
 
         isAwayFromHome() {
@@ -541,7 +559,7 @@
         }
 
         openOverlay() {
-            return [...document.querySelectorAll('[role="dialog"],[aria-modal="true"]')].find((el) => dom.isVisible(el)) || null;
+            return [...document.querySelectorAll(DIALOG_SELECTOR)].find((el) => dom.isVisible(el) && this.isViewer(el)) || null;
         }
 
         /** Close any opened result viewer / dialog so we are back at the main prompt box. */

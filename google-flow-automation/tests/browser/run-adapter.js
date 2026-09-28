@@ -28,11 +28,14 @@
     };
     let downloadChain = Promise.resolve();
     const events = [];
+    const times = {};
     async function runJob(prompt, n) {
         const pending = await withPage(() => adapter.submitPrompt(prompt, opts));
         events.push(`submit:${n}`);
+        times[`submit:${n}`] = Date.now();
         await adapter.waitForGenerated(pending, opts);
         events.push(`100%:${n}`);
+        times[`100%:${n}`] = Date.now();
         downloadChain = downloadChain.then(async () => {
             const video = await adapter.waitForVideo(pending, opts);
             await withPage(() => adapter.triggerNativeDownload(video, opts));
@@ -60,6 +63,9 @@
         check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0, { decoyClicks: window.mock.decoyClicks });
         check('script click ignored once -> real clicks used from then on', window.mock.ignoredClicks === 1 && adapter.preferTrusted && trustedCalls[0] === 'click', { ignored: window.mock.ignoredClicks, trustedCalls });
         check('"Show 1 Videos" was expanded for the collapsed result', !/Show 1 Videos/.test(document.body.innerText), null);
+        const nextPromptGaps = [2, 3].map((n) => (times[`submit:${n}`] - times[`100%:${n - 1}`]) / 1000);
+        check('the next prompt is sent within 3s of the previous one reaching 100%', nextPromptGaps.every((g) => g < 3), { secondsAfter100: nextPromptGaps });
+        check('the chat panel that was open from the start was kept (not closed as a viewer)', document.getElementById('panel')?.isConnected, null);
         const gaps = window.mock.downloadedAt.map((d, k) => (d - window.mock.readyAt[k]) / 1000);
         check('downloads start within seconds of each video appearing', gaps.length === 3 && gaps.every((g) => g < 8), { gapsSeconds: gaps });
 

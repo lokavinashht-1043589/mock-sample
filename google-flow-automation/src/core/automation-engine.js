@@ -190,6 +190,7 @@ export class FlowAutomationEngine {
 
     async processQueue() {
         this.abortController = new AbortController();
+        this.lastGeneratedAt = null;
         this.logger.info('Automation started');
         try {
             let needDelay = false;
@@ -435,14 +436,19 @@ export class FlowAutomationEngine {
 
     async submitPrompt(job) {
         const settings = this.getSettings();
-        this.logger.info(`Job ${job.number}: entering prompt in the main prompt box`);
+        this.logger.info(`Job ${job.number}: entering prompt in the main prompt box${this.sinceLastGenerated()}`);
         const pending = await this.adapter.submitPrompt(job.prompt, {
             signal: this.abortController?.signal,
             elementTimeoutMs: settings.elementTimeoutMs,
             onProgress: (detail) => this.progress(job.number, detail)
         });
-        this.logger.info(`Job ${job.number}: video generation started`);
+        this.logger.info(`Job ${job.number}: prompt sent, video generation started${this.sinceLastGenerated()}`);
         return pending;
+    }
+
+    /** " (4.2s after the previous prompt reached 100%)" — shows in the log where any delay is. */
+    sinceLastGenerated() {
+        return this.lastGeneratedAt ? ` (${((Date.now() - this.lastGeneratedAt) / 1000).toFixed(1)}s after the previous prompt reached 100%)` : '';
     }
 
     async waitForGenerated(job, pendingVideo) {
@@ -452,7 +458,9 @@ export class FlowAutomationEngine {
             timeoutMs: settings.videoGenerationTimeoutMs,
             onProgress: (detail) => this.progress(job.number, detail)
         });
-        this.logger.info(`Job ${job.number}: video generation completed (100%)`);
+        this.lastGeneratedAt = Date.now();
+        const delay = this.getSettings().delayBetweenJobsMs;
+        this.logger.info(`Job ${job.number}: video generation completed (100%) — next prompt ${delay > 0 ? `in ${Math.round(delay / 1000)}s (Delay between jobs setting)` : 'starts now'}`);
     }
 
     async waitForVideo(job, pendingVideo) {
