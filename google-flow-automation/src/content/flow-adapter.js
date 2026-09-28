@@ -30,9 +30,11 @@
     }
 
     class FlowAdapter {
-        constructor({ selectors, log }) {
+        constructor({ selectors, log, trusted = null }) {
             this.selectors = selectors;
             this.log = log || (() => {});
+            this.trusted = trusted; // (action, args) => Promise: real input via the background
+            this.preferTrusted = false; // set once Flow has ignored a script click
             this.refs = new Map();
             this.pendingVideos = new Map();
             this.seq = 0;
@@ -188,12 +190,42 @@
             dom.pressKey(input, 'End');
         }
 
+        /** Viewport centre of an element, for real (debugger) clicks. */
+        centerOf(el) {
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = el.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        }
+
+        /** Retype the prompt as real keyboard input so Flow's editor state definitely has it. */
+        async typePromptTrusted(input, text) {
+            if (!this.trusted || !input || !text) return false;
+            input.focus();
+            if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+                input.select();
+            } else {
+                const range = document.createRange();
+                range.selectNodeContents(input);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+            await this.trusted('insertText', { text });
+            await dom.sleep(300);
+            return dom.normalizeText(dom.readInputText(input)) === dom.normalizeText(text);
+        }
+
         /** One way of submitting the composer. Returns a description for the log. */
         async pressGenerate(method, { text, signal, timeout }) {
             const input = this.findPromptInput();
-            if (method === 'enter') {
+            if (method === 'enter' || method === 'trusted-enter') {
                 if (!input) return null;
                 input.focus();
+                if (method === 'trusted-enter') {
+                    if (!this.trusted) return null;
+                    await this.trusted('pressEnter');
+                    return 'pressing Enter (real key press)';
+                }
                 dom.pressKey(input, 'Enter');
                 return 'pressing Enter in the prompt box';
             }
@@ -215,7 +247,17 @@
             if (!(await waitEnabled(4000))) {
                 this.debug('Generate button is still disabled — re-entering the prompt so Flow registers it');
                 this.nudgePrompt(input, text);
-                if (!(await waitEnabled(4000))) this.log('warn', `Generate button stays disabled (${dom.describeElement(button)}); clicking anyway`);
+                if (!(await waitEnabled(3000)) && (await this.typePromptTrusted(input, text).catch(() => false))) {
+                    this.debug('Retyped the prompt with real key presses');
+                    await waitEnabled(3000);
+                }
+                if (!enabled()) this.log('warn', `Generate button stays disabled (${dom.describeElement(button)}); clicking anyway`);
+            }
+            if (method === 'trusted-click') {
+                if (!this.trusted) return null;
+                this.debug(`Real click on generate: ${dom.describeElement(button)}`);
+                await this.trusted('click', this.centerOf(button));
+                return { button, how: `a real click on ${dom.describeElement(button)}` };
             }
             this.debug(`Clicking generate: ${dom.describeElement(button)}`);
             dom.click(button);
@@ -228,10 +270,23 @@
          */
         async submit(baseline, { kind, text = '', signal, timeout = 30000 }) {
             const deadline = Date.now() + timeout;
-            const methods = ['click', 'enter', 'click'];
+            // Script click first; Flow's arrow may ignore script events, so then a real click.
+            // Once a real click was needed, go straight to it for the rest of the session.
+            const methods = this.trusted
+                ? this.preferTrusted
+                    ? ['trusted-click', 'trusted-enter', 'trusted-click']
+                    : ['click', 'trusted-click', 'trusted-enter']
+                : ['click', 'enter', 'click'];
             for (let i = 0; i < methods.length; i++) {
                 const last = i === methods.length - 1;
-                const result = await this.pressGenerate(methods[i], { text, signal, timeout: Math.max(1000, deadline - Date.now()) });
+                let result;
+                try {
+                    result = await this.pressGenerate(methods[i], { text, signal, timeout: Math.max(1000, deadline - Date.now()) });
+                } catch (error) {
+                    if (error.code === 'ABORTED') throw error;
+                    this.log('warn', `Could not submit by ${methods[i]}: ${error.message}`);
+                    continue;
+                }
                 if (!result) continue;
                 const { button = null, how } = typeof result === 'string' ? { how: result } : result;
                 const windowMs = last ? Math.max(deadline - Date.now(), 3000) : Math.min(6000, Math.max(deadline - Date.now(), 3000));
@@ -241,6 +296,10 @@
                 });
                 if (started) {
                     this.debug(`Generation started (${started}) after ${how}`);
+                    if (methods[i].startsWith('trusted') && !this.preferTrusted) {
+                        this.preferTrusted = true;
+                        this.log('info', 'Flow only accepts real clicks — using them from now on');
+                    }
                     return started;
                 }
                 if (!last) this.log('warn', `Flow did not start generating after ${how}; trying again`);

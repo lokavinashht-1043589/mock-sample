@@ -20,7 +20,8 @@ export function isFlowUrl(url) {
  * Command replies, heartbeats and progress all arrive over that port.
  */
 export class FlowConnection {
-    constructor({ getSettings, logger, onTabChanged = () => {} }) {
+    constructor({ getSettings, logger, onTabChanged = () => {}, trustedInput = null }) {
+        this.trustedInput = trustedInput;
         this.getSettings = getSettings;
         this.logger = logger;
         this.onTabChanged = onTabChanged;
@@ -62,6 +63,9 @@ export class FlowConnection {
                 break;
             case 'HEARTBEAT':
                 break; // receiving it is the point: it keeps the MV3 worker alive
+            case 'TRUSTED_INPUT':
+                this.handleTrustedInput(tabId, msg);
+                break;
             case 'LOG': {
                 const level = ['debug', 'info', 'warn', 'error'].includes(msg.level) ? msg.level : 'info';
                 this.logger[level](`[page] ${msg.message}`);
@@ -69,6 +73,24 @@ export class FlowConnection {
             }
             default:
                 break;
+        }
+    }
+
+    async handleTrustedInput(tabId, msg) {
+        const reply = (payload) => {
+            try {
+                this.ports.get(tabId)?.postMessage({ type: 'TRUSTED_RESULT', id: msg.id, ...payload });
+            } catch {
+                // tab went away
+            }
+        };
+        try {
+            if (!this.trustedInput) throw new Error('Real input is not available');
+            await this.trustedInput.run(tabId, msg.action, msg.args);
+            reply({ ok: true });
+        } catch (error) {
+            this.logger.warn(`Real ${msg.action} failed: ${error.message}`);
+            reply({ ok: false, error: error.message });
         }
     }
 

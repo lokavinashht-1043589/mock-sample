@@ -22,7 +22,7 @@ function walk(dir, out = []) {
 // ── manifest ──
 const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
 if (manifest.manifest_version !== 3) fail('manifest_version must be 3');
-const allowedPermissions = new Set(['storage', 'downloads', 'scripting']);
+const allowedPermissions = new Set(['storage', 'downloads', 'scripting', 'debugger']); // debugger: real clicks (src/background/trusted-input.js)
 for (const p of manifest.permissions || []) if (!allowedPermissions.has(p)) fail(`Unexpected permission: ${p}`);
 for (const h of manifest.host_permissions || []) if (/<all_urls>|^\*:|:\/\/\*\//.test(h)) fail(`Over-broad host permission: ${h}`);
 const referenced = [

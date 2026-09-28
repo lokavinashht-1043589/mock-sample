@@ -140,7 +140,10 @@
             document.body.append(t);
         }
 
-        createBtn.addEventListener('click', async () => {
+        // Like Flow's arrow: script-made clicks (isTrusted=false) are ignored. run-adapter.js stands in
+        // for the real debugger click by setting mock.realClick while it clicks at the coordinates.
+        createBtn.addEventListener('click', async (event) => {
+            if (!event.isTrusted && !window.mock.realClick) { window.mock.ignoredClicks = (window.mock.ignoredClicks || 0) + 1; return; }
             const prompt = input.value;
             window.mock.submissions.push({ prompt, mode: window.mock.mode, frame: Boolean(window.mock.startFrame) });
             window.mock.busy = true;

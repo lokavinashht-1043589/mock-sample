@@ -42,7 +42,9 @@ export const PORT_MSG = Object.freeze({
     RESULT: 'RESULT', // cs -> bg
     HEARTBEAT: 'HEARTBEAT', // cs -> bg while a command runs (keeps the MV3 worker alive)
     PROGRESS: 'PROGRESS', // cs -> bg
-    LOG: 'LOG' // cs -> bg
+    LOG: 'LOG', // cs -> bg
+    TRUSTED_INPUT: 'TRUSTED_INPUT', // cs -> bg: perform a real click / typing via chrome.debugger
+    TRUSTED_RESULT: 'TRUSTED_RESULT' // bg -> cs
 });
 
 export const COMMANDS = Object.freeze({

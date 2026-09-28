@@ -32,7 +32,23 @@
     };
     ns.debugLog = (message) => log('debug', message);
 
-    const adapter = new ns.FlowAdapter({ selectors: ns.FLOW_SELECTORS, log });
+    // Real clicks/typing are performed by the background (chrome.debugger); see trusted-input.js.
+    const trustedWaiters = new Map();
+    let trustedSeq = 0;
+    function requestTrusted(action, args = {}) {
+        if (!port) return Promise.reject(new Error('Not connected to the extension'));
+        const id = ++trustedSeq;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                trustedWaiters.delete(id);
+                reject(new Error(`Real ${action} timed out`));
+            }, 10000);
+            trustedWaiters.set(id, { resolve, reject, timer });
+            send({ type: 'TRUSTED_INPUT', id, action, args });
+        });
+    }
+
+    const adapter = new ns.FlowAdapter({ selectors: ns.FLOW_SELECTORS, log, trusted: requestTrusted });
 
     function applySettings(settings) {
         debugMode = Boolean(settings?.debugMode);
@@ -101,6 +117,14 @@
     }
 
     async function onMessage(message) {
+        if (message?.type === 'TRUSTED_RESULT') {
+            const waiter = trustedWaiters.get(message.id);
+            if (!waiter) return;
+            trustedWaiters.delete(message.id);
+            clearTimeout(waiter.timer);
+            message.ok ? waiter.resolve() : waiter.reject(new Error(message.error || 'Real input failed'));
+            return;
+        }
         if (!message || message.type !== 'COMMAND') return;
         const { id, command, args } = message;
 

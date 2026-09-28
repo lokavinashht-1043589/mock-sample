@@ -8,6 +8,7 @@ import { DownloadManager } from '../core/download-manager.js';
 import { FlowAutomationEngine } from '../core/automation-engine.js';
 import { FlowConnection } from './flow-connection.js';
 import { RemoteFlowAdapter } from './remote-flow-adapter.js';
+import { TrustedInput } from './trusted-input.js';
 
 // ───────────────────────────── wiring ─────────────────────────────
 
@@ -19,9 +20,11 @@ const logger = new Logger({
     persist: (entries) => chrome.storage.local.set({ [STORAGE_KEYS.LOGS]: entries })
 });
 const stateManager = new StateManager({ storage: chrome.storage.local, persistDelayMs: 1500 });
+const trustedInput = new TrustedInput({ logger });
 const connection = new FlowConnection({
     getSettings,
     logger,
+    trustedInput,
     onTabChanged: (tabId) => stateManager.update({ flowTabId: tabId }, { immediate: false })
 });
 const adapter = new RemoteFlowAdapter(connection, getSettings);
@@ -75,6 +78,8 @@ let keepAliveTimer = null;
 stateManager.subscribe((state) => {
     const active = [RUN_STATUS.RUNNING, RUN_STATUS.PAUSING, RUN_STATUS.WAITING_AUTH, RUN_STATUS.WAITING_PROJECT, RUN_STATUS.STOPPING].includes(state.runStatus);
     if (active && !keepAliveTimer) keepAliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(), 20_000);
+    // Real clicks keep Chrome's "debugging this browser" bar up; drop it once the run is over.
+    if (!active) trustedInput.detachAll();
     if (!active && keepAliveTimer) {
         clearInterval(keepAliveTimer);
         keepAliveTimer = null;

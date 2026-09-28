@@ -4,7 +4,16 @@
 (async function () {
     const ns = globalThis.__GFA__;
     const logs = [];
-    const adapter = new ns.FlowAdapter({ selectors: ns.FLOW_SELECTORS, log: (level, m) => logs.push(`${level}: ${m}`) });
+    // Stand-in for the background's chrome.debugger input (src/background/trusted-input.js).
+    const trustedCalls = [];
+    const trusted = async (action, args) => {
+        trustedCalls.push(action);
+        if (action === 'click') {
+            window.mock.realClick = true;
+            try { document.elementFromPoint(args.x, args.y)?.closest('button')?.click(); } finally { window.mock.realClick = false; }
+        }
+    };
+    const adapter = new ns.FlowAdapter({ selectors: ns.FLOW_SELECTORS, log: (level, m) => logs.push(`${level}: ${m}`), trusted });
     const checks = [];
     const check = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
     const opts = { timeoutMs: 15000, elementTimeoutMs: 5000, onProgress: (p) => logs.push(`progress: ${typeof p === 'string' ? p : JSON.stringify(p)}`) };
@@ -18,11 +27,13 @@
         check('image mode was selected', window.mock.submissions[0].mode === 'Create Image', window.mock.submissions[0]);
         check('prompt submitted exactly', window.mock.submissions[0].prompt === prompt, window.mock.submissions[0].prompt);
         check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
+        check('script click ignored -> real click at the arrow position submitted it', window.mock.ignoredClicks === 1 && trustedCalls[0] === 'click', { ignored: window.mock.ignoredClicks, trustedCalls });
         check('new image found (not the old one)', image.ref && adapter.refs.get(image.ref).alt === 'generated', image);
 
         const pending = await adapter.animateImage(image, { ...opts, prompt });
         check('animate + submit produced a video submission with the frame', window.mock.submissions[1]?.frame === true, window.mock.submissions[1]);
 
+        check('after one ignored click, real clicks are used directly', window.mock.ignoredClicks === 1 && adapter.preferTrusted, { ignored: window.mock.ignoredClicks });
         const video = await adapter.waitForVideo(pending, opts);
         const info = adapter.getVideoInfo(video);
         check('video detected, blob URL reported as not directly downloadable', info.isBlob && info.url === null, info);

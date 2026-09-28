@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Paste numbered prompts once; each one runs through Google Flow (image, animate, video) and downloads as <number>.mp4.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "downloads", "scripting"],
+  "permissions": ["storage", "downloads", "scripting", "debugger"],
   "host_permissions": ["https://flow.google.com/*", "https://labs.google/fx/*"],
   "background": {
     "service_worker": "src/background/service-worker.js",
