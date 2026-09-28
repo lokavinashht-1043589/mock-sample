@@ -54,10 +54,11 @@
             { css: '[contenteditable="true"][role="textbox"]' },
             { css: '[contenteditable="true"]' }
         ],
-        // Searched outward from the prompt box first (see FlowAdapter.findGenerateButton): the
+        // Searched outward from the prompt box only (see FlowAdapter.findGenerateButton): the
         // page has other "Create…" buttons, and a page-wide first match clicked the wrong one.
+        // If none of these match, the right-pointing arrow icon beside the prompt is found by shape.
         generateButton: [
-            { text: '^\\s*arrow_forward', tag: 'button,[role="button"]', note: 'Composer submit: arrow icon (+ "Create" label)' },
+            { text: '^\\s*(arrow_forward|arrow_right_alt|arrow_upward|send|north_east)', tag: 'button,[role="button"]', note: 'Composer submit: arrow icon (Material Symbols ligature)' },
             { aria: '^\\s*(create|generate|send|submit|run)\\b' },
             { text: '^\\s*(create|generate|send|submit)\\s*$', tag: 'button,[role="button"]' },
             { css: 'button[type="submit"]' }

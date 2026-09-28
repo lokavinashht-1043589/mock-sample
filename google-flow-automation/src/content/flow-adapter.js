@@ -141,14 +141,39 @@
          */
         findGenerateButton(input = this.findPromptInput()) {
             const candidate = (el) => el.matches('button,[role="button"]') && !el.hasAttribute('aria-haspopup') && !(input && el.contains(input));
-            if (input) {
-                let node = input.parentElement;
-                for (let depth = 0; node && node !== document.body && depth < 6; depth++, node = node.parentElement) {
-                    const hit = dom.findFirst(this.sel('generateButton'), { root: node, filter: candidate });
-                    if (hit) return hit;
-                }
+            if (!input) return dom.findFirst(this.sel('generateButton'), { filter: candidate });
+            let node = input.parentElement;
+            for (let depth = 0; node && node !== document.body && depth < 10; depth++, node = node.parentElement) {
+                const hit = dom.findFirst(this.sel('generateButton'), { root: node, filter: candidate }) || this.findArrowButton(node, input);
+                if (hit) return hit;
             }
-            return dom.findFirst(this.sel('generateButton'), { filter: candidate });
+            // Never fall back to a page-wide match: that is how a different "Create…" button got clicked.
+            return null;
+        }
+
+        /**
+         * Flow's submit is an icon-only button (a right-pointing arrow, often an SVG with no text
+         * or label), so selectors can't name it. Pick the icon button in the composer that sits
+         * to the right of / below the prompt, skipping ones whose name says they do something else.
+         */
+        findArrowButton(root, input) {
+            const OTHER = /(add|attach|upload|image|photo|media|frame|ingredient|mic|voice|setting|tune|option|more|menu|close|cancel|delete|remove|clear|expand|collapse|model|mode|aspect|count|help)/i;
+            const ARROW = /(arrow|send|submit|create|generate|north|east|forward|right)/i;
+            const box = input.getBoundingClientRect();
+            let best = null;
+            for (const el of root.querySelectorAll('button,[role="button"]')) {
+                if (el.contains(input) || el.hasAttribute('aria-haspopup') || !dom.isVisible(el)) continue;
+                const name = dom.accessibleName(el);
+                const iconOnly = name.length <= 30 && (!name || /^[a-z0-9_]+$/.test(name) || Boolean(el.querySelector('svg,img,i,mat-icon,[class*="icon" i],[class*="symbol" i]')));
+                if (!iconOnly) continue;
+                if (name && OTHER.test(name) && !ARROW.test(name)) continue;
+                const r = el.getBoundingClientRect();
+                const rightOrBelow = r.left >= box.left + box.width / 2 || r.top >= box.bottom - 4;
+                if (!rightOrBelow) continue;
+                const score = (ARROW.test(name) ? 10 : 0) + (el.querySelector('svg') || /arrow/i.test(name) ? 2 : 0) + r.right / 10000 + r.bottom / 100000;
+                if (!best || score > best.score) best = { el, score };
+            }
+            return best?.el || null;
         }
 
         /** Re-announce the prompt to the page's framework so it enables its submit button. */
@@ -548,7 +573,7 @@
                         label,
                         found: Boolean(button),
                         count: button ? 1 : 0,
-                        strategy: strategy ? dom.describeStrategy(strategy) : null,
+                        strategy: strategy ? dom.describeStrategy(strategy) : button ? 'the arrow icon beside the prompt' : null,
                         verified: Boolean(strategy?.verified),
                         sample: button ? `${dom.describeElement(button)}${dom.isEnabled(button) ? '' : ' (disabled until a prompt is entered)'}` : null
                     };

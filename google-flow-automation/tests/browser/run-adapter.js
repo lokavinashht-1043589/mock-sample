@@ -17,7 +17,7 @@
         const image = await adapter.generateImage(prompt, opts);
         check('image mode was selected', window.mock.submissions[0].mode === 'Create Image', window.mock.submissions[0]);
         check('prompt submitted exactly', window.mock.submissions[0].prompt === prompt, window.mock.submissions[0].prompt);
-        check('clicked the composer Create button, not another "Create…" control', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
+        check('clicked the arrow submit button, not another button', window.mock.decoyClicks === 0 && window.mock.submissions.length === 1, { decoyClicks: window.mock.decoyClicks, submissions: window.mock.submissions.length });
         check('new image found (not the old one)', image.ref && adapter.refs.get(image.ref).alt === 'generated', image);
 
         const pending = await adapter.animateImage(image, { ...opts, prompt });

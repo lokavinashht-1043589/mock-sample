@@ -19,7 +19,10 @@
         .card:hover .css-only { display: flex; }
         .card .css-only { position: absolute; bottom: 6px; right: 6px; display: none; }
         .composer { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px; background: #1a1a1a; display: flex; gap: 8px; align-items: center; }
-        .composer textarea { flex: 1; height: 48px; }
+        /* Real layout: prompt box on top; below it "+" on the left, then frames, sliders, arrow on the right. */
+        .composer { flex-wrap: wrap; }
+        .composer textarea { order: -1; flex: 1 0 100%; height: 48px; }
+        .composer #frames { margin-left: auto; }
         .frame { width: 48px; height: 48px; border-radius: 6px; background-size: cover; display: none; }
         .menu { position: fixed; background: #333; padding: 4px; border-radius: 8px; }
         button { font: inherit; }
@@ -38,9 +41,13 @@
     </main>
     <div class="composer">
         <div class="frame" id="frame"></div>
+        <button id="addMedia" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M11 5h2v14h-2zM5 11h14v2H5z" fill="currentColor"/></svg></button>
         <textarea id="PINHOLE_TEXT_AREA_ELEMENT_ID" placeholder="What do you want to create?"></textarea>
-        <!-- Like the real Flow composer: icon + label, no aria-label, disabled until the prompt registers. -->
-        <button id="create" disabled><i>arrow_forward</i><span>Create</span></button>
+        <button id="frames" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" fill="currentColor"/></svg></button>
+        <button id="settings" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
+        <!-- Like the real Flow composer: a right-pointing arrow ICON only (SVG, no text, no aria-label),
+             disabled until the prompt registers. -->
+        <button id="create" class="icon" disabled><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4l-1.4 1.4L16.2 11H4v2h12.2l-5.6 5.6L12 20l8-8z" fill="currentColor"/></svg></button>
     </div>
 
     <script>
@@ -51,7 +58,7 @@
         const modeBtn = document.getElementById('mode');
         const frame = document.getElementById('frame');
         window.mock = { submissions: [], mode: 'Text to Video', downloads: [], startFrame: null, failNext: null, decoyClicks: 0, busy: false };
-        document.getElementById('decoy').addEventListener('click', () => window.mock.decoyClicks++);
+        for (const id of ['decoy', 'addMedia', 'frames', 'settings']) document.getElementById(id).addEventListener('click', () => window.mock.decoyClicks++);
 
         // The app only enables Create once its own state has seen the text (a beat after input).
         const syncCreate = () => { createBtn.disabled = window.mock.busy || !(input.value.trim() || window.mock.startFrame); };
