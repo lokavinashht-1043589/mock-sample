@@ -4,7 +4,7 @@ import { AbortedError } from '../../src/utils/helpers.js';
  * Stand-in for Google Flow. Same interface as RemoteFlowAdapter.
  *
  *   new MockFlowAdapter({
- *     failures: { generateImage: [new Error('boom'), null] },   // per-call outcomes, null = succeed
+ *     failures: { submitPrompt: [new Error('boom'), null] },    // per-call outcomes, null = succeed
  *     ready: [{ authenticated: false }, { ready: true, authenticated: true }],
  *     hang: { waitForVideo: (prompt) => prompt === 'B' },       // block until aborted
  *     videoUrl: (prompt) => 'https://media.test/v.mp4'
@@ -43,20 +43,15 @@ export class MockFlowAdapter {
         return this.readySequence.length ? this.readySequence.shift() : { ready: true, authenticated: true };
     }
 
-    async generateImage(prompt, { signal } = {}) {
+    async submitPrompt(prompt, { signal } = {}) {
         this.active++;
         this.maxActive = Math.max(this.maxActive, this.active);
         try {
-            await this.step('generateImage', prompt, signal);
-            return { id: `mock-image-${++this.seq}`, prompt };
+            await this.step('submitPrompt', prompt, signal);
+            return { id: `mock-pending-${++this.seq}`, prompt };
         } finally {
             this.active--;
         }
-    }
-
-    async animateImage(image, { signal } = {}) {
-        await this.step('animateImage', image.prompt, signal);
-        return { id: `mock-pending-${++this.seq}`, prompt: image.prompt };
     }
 
     async waitForVideo(pending, { signal } = {}) {

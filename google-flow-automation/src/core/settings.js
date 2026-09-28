@@ -6,7 +6,6 @@ export const DEFAULT_FLOW_URL = 'https://flow.google.com/';
 export const DEFAULT_SETTINGS = Object.freeze({
     flowUrl: DEFAULT_FLOW_URL,
     maxRetries: 2,
-    imageGenerationTimeoutMs: 5 * 60 * 1000,
     videoGenerationTimeoutMs: 10 * 60 * 1000,
     downloadTimeoutMs: 5 * 60 * 1000,
     elementTimeoutMs: 30 * 1000,
@@ -14,7 +13,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
     filenamePrefix: '',
     downloadSubfolder: '',
     duplicateBehavior: 'prevent', // prevent | suffix | overwrite
-    animationPromptMode: 'reuse', // reuse | empty  — what goes in the prompt box for the animate step
     autoResume: false,
     debugMode: false,
     selectorOverrides: '' // JSON string, see README "Updating selectors"
@@ -41,7 +39,6 @@ export function normalizeSettings(input = {}) {
     return {
         flowUrl,
         maxRetries: clampInt(s.maxRetries, 0, 10, d.maxRetries),
-        imageGenerationTimeoutMs: clampInt(s.imageGenerationTimeoutMs, 10_000, 60 * 60_000, d.imageGenerationTimeoutMs),
         videoGenerationTimeoutMs: clampInt(s.videoGenerationTimeoutMs, 10_000, 2 * 60 * 60_000, d.videoGenerationTimeoutMs),
         downloadTimeoutMs: clampInt(s.downloadTimeoutMs, 10_000, 60 * 60_000, d.downloadTimeoutMs),
         elementTimeoutMs: clampInt(s.elementTimeoutMs, 1_000, 10 * 60_000, d.elementTimeoutMs),
@@ -49,7 +46,6 @@ export function normalizeSettings(input = {}) {
         filenamePrefix: String(s.filenamePrefix ?? ''),
         downloadSubfolder: String(s.downloadSubfolder ?? ''),
         duplicateBehavior: ['prevent', 'suffix', 'overwrite'].includes(s.duplicateBehavior) ? s.duplicateBehavior : d.duplicateBehavior,
-        animationPromptMode: ['reuse', 'empty'].includes(s.animationPromptMode) ? s.animationPromptMode : d.animationPromptMode,
         autoResume: Boolean(s.autoResume),
         debugMode: Boolean(s.debugMode),
         selectorOverrides: String(s.selectorOverrides ?? '')

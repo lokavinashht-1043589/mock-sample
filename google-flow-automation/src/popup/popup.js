@@ -201,7 +201,7 @@ function renderDiagnostics(d) {
     for (const item of d.items) {
         const reason = item.found
             ? `${item.count} match${item.count === 1 ? '' : 'es'} via ${item.strategy || 'media scan'}${item.verified ? ' (verified selector)' : ''}`
-            : `Possible reason: Google Flow UI changed or the selector "${item.key}" needs updating.${/image|video|animate|download|progress|more/i.test(item.key) ? ' (Needs a generated result on screen.)' : ''}`;
+            : `Possible reason: Google Flow UI changed or the selector "${item.key}" needs updating.${/video|download|progress|more/i.test(item.key) ? ' (Needs a generated result on screen.)' : ''}`;
         row(item.label, item.found, reason);
     }
     if (d.errorsOnPage?.length) row('Error messages on page', false, d.errorsOnPage.join('\n'));

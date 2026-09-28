@@ -101,10 +101,8 @@
                 return adapter.getStatus();
             case 'DIAGNOSE':
                 return { ...adapter.diagnose(), selectorError };
-            case 'GENERATE_IMAGE':
-                return adapter.generateImage(args.prompt, opts);
-            case 'ANIMATE_IMAGE':
-                return adapter.animateImage(args.image, opts);
+            case 'SUBMIT_PROMPT':
+                return adapter.submitPrompt(args.prompt, opts);
             case 'WAIT_FOR_VIDEO':
                 return adapter.waitForVideo(args.video, opts);
             case 'GET_VIDEO_INFO':

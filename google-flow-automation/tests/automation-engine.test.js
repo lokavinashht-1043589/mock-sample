@@ -54,9 +54,9 @@ test('processes all jobs sequentially, in order, never two at once, names files 
     assert.equal(adapter.maxActive, 1);
     const steps = adapter.calls.filter((c) => c !== 'checkReady');
     assert.deepEqual(steps, [
-        'generateImage:A', 'animateImage:A', 'waitForVideo:A', 'getVideoDownloadInfo:A',
-        'generateImage:B', 'animateImage:B', 'waitForVideo:B', 'getVideoDownloadInfo:B',
-        'generateImage:C', 'animateImage:C', 'waitForVideo:C', 'getVideoDownloadInfo:C'
+        'submitPrompt:A', 'waitForVideo:A', 'getVideoDownloadInfo:A',
+        'submitPrompt:B', 'waitForVideo:B', 'getVideoDownloadInfo:B',
+        'submitPrompt:C', 'waitForVideo:C', 'getVideoDownloadInfo:C'
     ]);
     assert.equal(stateManager.get().runStatus, RUN_STATUS.COMPLETED);
     assert.deepEqual(stateManager.get().summary.files, ['1.mp4', '2.mp4', '10.mp4']);
@@ -67,7 +67,7 @@ test('prompt is passed to Flow exactly, without the number prefix', async () => 
     const text = '1] A highly detailed cinematic shot of a futuristic city, neon lights, rain, 4K';
     const { engine, adapter } = await setup({ text });
     await runToEnd(engine);
-    assert.deepEqual(adapter.promptsFor('generateImage'), ['A highly detailed cinematic shot of a futuristic city, neon lights, rain, 4K']);
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['A highly detailed cinematic shot of a futuristic city, neon lights, rain, 4K']);
 });
 
 test('job 2 does not start until job 1 download has completed', async () => {
@@ -78,7 +78,7 @@ test('job 2 does not start until job 1 download has completed', async () => {
         if (delta.state?.current === 'complete') order.push(`downloaded:${delta.id}`);
         origEmit(delta);
     };
-    const adapter = new MockFlowAdapter({ onStep: (name, prompt) => name === 'generateImage' && order.push(`start:${prompt}`) });
+    const adapter = new MockFlowAdapter({ onStep: (name, prompt) => name === 'submitPrompt' && order.push(`start:${prompt}`) });
     const { engine } = await setup({ text: '1] A\n2] B', adapter, downloads });
     await runToEnd(engine);
     assert.deepEqual(order, ['start:A', 'downloaded:1', 'start:B', 'downloaded:2']);
@@ -89,7 +89,7 @@ test('retries a failing step and succeeds (retryCount recorded)', async () => {
     const { engine, stateManager } = await setup({ text: '1] A\n2] B', adapter });
     await runToEnd(engine);
     assert.deepEqual(jobsOf(stateManager)[0], { n: 1, status: 'completed', file: '1.mp4', retries: 2 });
-    assert.equal(adapter.promptsFor('generateImage').filter((p) => p === 'A').length, 3);
+    assert.equal(adapter.promptsFor('submitPrompt').filter((p) => p === 'A').length, 3);
 });
 
 test('after max retries the job fails, error is stored, and the queue continues', async () => {
@@ -107,16 +107,16 @@ test('after max retries the job fails, error is stored, and the queue continues'
 });
 
 test('maxRetries setting is honoured (0 = no retry)', async () => {
-    const adapter = new MockFlowAdapter({ failures: { generateImage: [new Error('x')] } });
+    const adapter = new MockFlowAdapter({ failures: { submitPrompt: [new Error('x')] } });
     const { engine, stateManager } = await setup({ text: '1] A', adapter, settings: { maxRetries: 0 } });
     await runToEnd(engine);
     assert.equal(stateManager.getJob(1).status, 'failed');
-    assert.equal(adapter.promptsFor('generateImage').length, 1);
+    assert.equal(adapter.promptsFor('submitPrompt').length, 1);
 });
 
 test('non-retryable errors (content policy) fail immediately', async () => {
     const policy = Object.assign(new Error('Flow content policy: blocked'), { code: 'CONTENT_POLICY', retryable: false });
-    const adapter = new MockFlowAdapter({ failures: { generateImage: [policy] } });
+    const adapter = new MockFlowAdapter({ failures: { submitPrompt: [policy] } });
     const { engine, stateManager } = await setup({ text: '1] A\n2] B', adapter });
     await runToEnd(engine);
     assert.equal(stateManager.getJob(1).status, 'failed');
@@ -156,7 +156,7 @@ test('pause lets the current job finish, then stops before the next; resume cont
     await engine.resume();
     await engine.whenIdle();
     assert.deepEqual(jobsOf(stateManager).map((j) => j.status), ['completed', 'completed', 'completed']);
-    assert.deepEqual(adapter.promptsFor('generateImage'), ['A', 'B', 'C']);
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['A', 'B', 'C']);
 });
 
 test('stop aborts the current job, preserves completed ones; start again resumes from there', async () => {
@@ -179,7 +179,7 @@ test('stop aborts the current job, preserves completed ones; start again resumes
     adapter.releaseB = true;
     await runToEnd(engine);
     assert.deepEqual(jobsOf(stateManager).map((j) => j.status), ['completed', 'completed', 'completed']);
-    assert.equal(adapter.promptsFor('generateImage').filter((p) => p === 'A').length, 1, 'job 1 not re-run');
+    assert.equal(adapter.promptsFor('submitPrompt').filter((p) => p === 'A').length, 1, 'job 1 not re-run');
 });
 
 test('restart restore without Auto Resume: queue restored, nothing starts, completed jobs kept', async () => {
@@ -200,7 +200,7 @@ test('restart restore without Auto Resume: queue restored, nothing starts, compl
 
     await engine.resume();
     await engine.whenIdle();
-    assert.deepEqual(adapter.promptsFor('generateImage'), ['C', 'D', 'E'], 'jobs 1 and 2 are not restarted');
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['C', 'D', 'E'], 'jobs 1 and 2 are not restarted');
     assert.equal(stateManager.getJob(3).retryCount, 1, 'interrupted job counts as a retry');
 });
 
@@ -234,7 +234,7 @@ test('restore: a download that finished while the worker was down marks the job 
 
 test('Flow usage limit pauses the whole queue instead of burning retries', async () => {
     const quota = Object.assign(new Error('Flow: daily limit reached'), { code: 'QUOTA_EXCEEDED', retryable: false });
-    const adapter = new MockFlowAdapter({ failures: { generateImage: [null, quota] } });
+    const adapter = new MockFlowAdapter({ failures: { submitPrompt: [null, quota] } });
     const { engine, stateManager } = await setup({ text: '1] A\n2] B\n3] C', adapter });
     await runToEnd(engine);
     assert.equal(stateManager.get().runStatus, RUN_STATUS.PAUSED);
@@ -250,7 +250,7 @@ test('retry failed jobs only processes failed jobs', async () => {
     assert.deepEqual(numbers, [2]);
     await engine.start({ scope: { numbers } });
     await engine.whenIdle();
-    assert.deepEqual(adapter.promptsFor('generateImage'), ['B']);
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['B']);
     assert.deepEqual(jobsOf(stateManager).map((j) => j.status), ['completed', 'completed', 'pending']);
 });
 
@@ -270,37 +270,25 @@ test('"Prevent overwrite": existing output fails the job before any generation',
     assert.equal(stateManager.getJob(1).status, 'failed');
     assert.match(stateManager.getJob(1).error, /already exists: 1\.mp4/);
     assert.equal(stateManager.getJob(1).retryCount, 0);
-    assert.deepEqual(adapter.promptsFor('generateImage'), ['B']);
+    assert.deepEqual(adapter.promptsFor('submitPrompt'), ['B']);
 });
 
 test('configured timeouts are passed to the adapter', async () => {
     const seen = {};
     const adapter = new MockFlowAdapter();
-    const orig = { gen: adapter.generateImage.bind(adapter), wait: adapter.waitForVideo.bind(adapter) };
-    adapter.generateImage = (p, o) => ((seen.image = o.timeoutMs), orig.gen(p, o));
+    const orig = { submit: adapter.submitPrompt.bind(adapter), wait: adapter.waitForVideo.bind(adapter) };
+    adapter.submitPrompt = (p, o) => ((seen.element = o.elementTimeoutMs), orig.submit(p, o));
     adapter.waitForVideo = (v, o) => ((seen.video = o.timeoutMs), orig.wait(v, o));
-    const { engine } = await setup({ text: '1] A', adapter, settings: { imageGenerationTimeoutMs: 123_000, videoGenerationTimeoutMs: 456_000 } });
+    const { engine } = await setup({ text: '1] A', adapter, settings: { elementTimeoutMs: 12_000, videoGenerationTimeoutMs: 456_000 } });
     await runToEnd(engine);
-    assert.deepEqual(seen, { image: 123_000, video: 456_000 });
-});
-
-test('animation prompt mode: reuse passes the unmodified prompt, empty passes ""', async () => {
-    for (const [mode, expected] of [['reuse', 'A dog, running!'], ['empty', '']]) {
-        let got;
-        const adapter = new MockFlowAdapter();
-        const orig = adapter.animateImage.bind(adapter);
-        adapter.animateImage = (img, o) => ((got = o.prompt), orig(img, o));
-        const { engine } = await setup({ text: '1] A dog, running!', adapter, settings: { animationPromptMode: mode } });
-        await runToEnd(engine);
-        assert.equal(got, expected);
-    }
+    assert.deepEqual(seen, { element: 12_000, video: 456_000 });
 });
 
 test('logs the documented milestones', async () => {
     const { engine, logger } = await setup({ text: '1] A' });
     await runToEnd(engine);
     const text = logger.entries.map((e) => e.message).join('\n');
-    for (const line of ['Automation started', 'Job 1 started', 'image generation completed', 'animation started', 'video generation completed', 'download started', 'Saved: 1.mp4', 'Job 1 completed']) {
+    for (const line of ['Automation started', 'Job 1 started', 'entering prompt in the main prompt box', 'video generation started', 'video generation completed', 'download started', 'Saved: 1.mp4', 'Job 1 completed']) {
         assert.ok(text.includes(line), `missing log "${line}"`);
     }
 });

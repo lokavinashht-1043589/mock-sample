@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Google Flow Automation",
   "version": "1.0.0",
-  "description": "Paste numbered prompts once; each one runs through Google Flow (image, animate, video) and downloads as <number>.mp4.",
+  "description": "Paste numbered prompts once; each one is typed into your Flow project's prompt box, one at a time, and its video downloads as <number>.mp4.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "downloads", "scripting", "debugger"],
   "host_permissions": ["https://flow.google.com/*", "https://labs.google/fx/*"],

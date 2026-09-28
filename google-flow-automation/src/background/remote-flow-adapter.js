@@ -30,12 +30,8 @@ export class RemoteFlowAdapter {
         return { connected: true, ...status };
     }
 
-    async generateImage(prompt, { signal, timeoutMs, elementTimeoutMs, onProgress } = {}) {
-        return this.connection.command(COMMANDS.GENERATE_IMAGE, { prompt, timeoutMs, elementTimeoutMs }, { signal, timeoutMs: timeoutMs + 2 * elementTimeoutMs, onProgress });
-    }
-
-    async animateImage(image, { prompt, signal, elementTimeoutMs, onProgress } = {}) {
-        return this.connection.command(COMMANDS.ANIMATE_IMAGE, { image, prompt, elementTimeoutMs }, { signal, timeoutMs: 4 * elementTimeoutMs, onProgress });
+    async submitPrompt(prompt, { signal, elementTimeoutMs, onProgress } = {}) {
+        return this.connection.command(COMMANDS.SUBMIT_PROMPT, { prompt, elementTimeoutMs }, { signal, timeoutMs: 4 * elementTimeoutMs, onProgress });
     }
 
     async waitForVideo(video, { signal, timeoutMs, onProgress } = {}) {

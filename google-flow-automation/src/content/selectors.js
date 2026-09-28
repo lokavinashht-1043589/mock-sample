@@ -6,7 +6,7 @@
  * HONESTY NOTE
  *   Entries marked `verified: true` were checked against the live site (2026-09-28,
  *   signed-out pages only). Everything else is an UNVERIFIED best guess: the Flow
- *   workspace (prompt box, image/video cards, animate & download controls) sits behind
+ *   workspace (prompt box, video cards, download controls) sits behind
  *   Google sign-in, which this extension's author could not automate or inspect.
  *   Run "Flow Diagnostics" in the popup while signed in to see which ones match, then
  *   fix the misses either here or — without touching code — in
@@ -34,16 +34,6 @@
             { css: 'a[href*="accounts.google.com/SignOutOptions"]', note: 'Standard Google account menu link' },
             { aria: '^Google Account' },
             { css: 'img[alt*="profile" i]' }
-        ],
-
-        // ── image mode (optional; skipped if not found) ──────────────────────
-        imageModeTrigger: [
-            { role: 'combobox', name: 'video|image|mode' },
-            { text: '^\\s*(Text to Video|Frames to Video|Ingredients to Video|Create Image)\\s*(arrow_drop_down)?\\s*$', tag: 'button' }
-        ],
-        imageModeOption: [
-            { role: 'option', name: '^\\s*(image|create image|text to image)' },
-            { role: 'menuitem', name: '^\\s*(image|create image|text to image)' }
         ],
 
         // ── prompt + generate ────────────────────────────────────────────────
@@ -77,32 +67,23 @@
         ],
 
         // ── results ─────────────────────────────────────────────────────────
-        generatedImage: [
-            { css: 'img[src*="googleusercontent.com"]' },
-            { css: 'img[src*="storage.googleapis.com"]' },
-            { css: 'img[src^="blob:"]' },
-            { css: 'img[src*="/media"]' },
-            { css: 'main img' }
-        ],
         generatedVideo: [{ css: 'video' }],
+        // Flow's chat view can collapse finished clips behind "Show 10 Videos" (inline toggle).
+        showVideosButton: [{ text: '^\\s*show\\s+(all\\s+)?\\d*\\s*videos?\\s*$', tag: 'button,[role="button"]' }],
+        // Closes a result viewer/dialog (searched inside the open dialog only).
+        closeButton: [
+            { aria: '^\\s*(close|back|done|exit)\\b' },
+            { text: '^\\s*(close|arrow_back)\\s*$', tag: 'button,[role="button"]' }
+        ],
         resultCard: [
             { css: '[data-index]' },
             { css: '[role="listitem"]' },
             { css: '[role="gridcell"]' }
         ],
 
-        // Searched inside the result card first, then page-wide.
-        animateButton: [
-            { aria: 'animate|frames to video|to video|make video|create video' },
-            { text: '^\\s*(animate|frames to video|make video)\\s*$', tag: 'button,[role="button"],[role="menuitem"]' },
-            { text: '^\\s*(movie|animation)\\s*$', tag: 'button', note: 'Material icon names' }
-        ],
         cardMoreButton: [
             { aria: '^(more|more options|more actions)' },
             { text: '^\\s*more_(vert|horiz)\\s*$', tag: 'button' }
-        ],
-        animateMenuItem: [
-            { role: 'menuitem', name: 'animate|video|frames' }
         ],
         downloadButton: [
             { aria: '^\\s*download' },
@@ -125,11 +106,8 @@
     const DIAGNOSTIC_KEYS = [
         ['promptInput', 'Prompt input'],
         ['generateButton', 'Generate control'],
-        ['generatedImage', 'Generated image'],
-        ['animateButton', 'Animate control'],
         ['generatedVideo', 'Generated video'],
         ['downloadButton', 'Download control'],
-        ['imageModeTrigger', 'Image mode selector (optional)'],
         ['progressIndicator', 'Progress indicator (only during generation)'],
         ['cardMoreButton', 'Card "more" menu (optional)']
     ];

@@ -113,15 +113,20 @@
         }
 
         // ── prompt ───────────────────────────────────────────────────────
+        /** The project's main prompt box — never the one inside an opened result viewer/dialog. */
         findPromptInput() {
-            return dom.findFirst(this.sel('promptInput'), { filter: (el) => dom.isEnabled(el) && !el.readOnly });
+            return dom.findFirst(this.sel('promptInput'), { filter: (el) => dom.isEnabled(el) && !el.readOnly && !this.inOverlay(el) });
+        }
+
+        inOverlay(el) {
+            return Boolean(el.closest('[role="dialog"],[aria-modal="true"]'));
         }
 
         async setPrompt(text, { signal, timeout = 30000 } = {}) {
             const input = await dom.waitForElement(this.sel('promptInput'), {
                 timeout,
                 signal,
-                filter: (el) => dom.isEnabled(el) && !el.readOnly,
+                filter: (el) => dom.isEnabled(el) && !el.readOnly && !this.inOverlay(el),
                 message: 'Prompt input not found (selector "promptInput")'
             });
             for (let attempt = 1; attempt <= 2; attempt++) {
@@ -309,25 +314,6 @@
             });
         }
 
-        async ensureImageMode({ signal } = {}) {
-            const trigger = dom.findFirst(this.sel('imageModeTrigger'));
-            if (!trigger) {
-                this.debug('Image-mode selector not found; assuming Flow is already in an image mode');
-                return;
-            }
-            if (/image/i.test(dom.accessibleName(trigger))) return;
-            dom.click(trigger);
-            const option = await dom.waitForElement(this.sel('imageModeOption'), { timeout: 5000, signal }).catch(() => null);
-            if (option) {
-                this.debug(`Selecting image mode: ${dom.accessibleName(option)}`);
-                dom.click(option);
-                await dom.sleep(500, signal);
-            } else {
-                document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                this.log('warn', 'Could not switch Flow to image mode (selector "imageModeOption"); continuing in current mode');
-            }
-        }
-
         // ── media tracking ───────────────────────────────────────────────
         mediaKey(el) {
             if (el.tagName === 'VIDEO') return el.currentSrc || el.src || el.querySelector('source[src]')?.src || '';
@@ -349,11 +335,8 @@
         }
 
         snapshot() {
-            const images = this.collectMedia('generatedImage');
             const videos = [...document.querySelectorAll('video')];
             return {
-                imageEls: new WeakSet(images),
-                imageKeys: new Set(images.map((el) => this.mediaKey(el)).filter(Boolean)),
                 videoEls: new WeakSet(videos),
                 videoKeys: new Set(videos.map((el) => this.mediaKey(el)).filter(Boolean)),
                 errors: new Set(this.currentErrors()),
@@ -361,17 +344,10 @@
             };
         }
 
-        newImages(baseline) {
-            return this.collectMedia('generatedImage').filter((el) => {
-                const key = this.mediaKey(el);
-                return key && !baseline.imageEls.has(el) && !baseline.imageKeys.has(key);
-            });
-        }
-
         newVideos(baseline) {
             return this.collectMedia('generatedVideo').filter((el) => {
                 const key = this.mediaKey(el);
-                return key && !baseline.videoEls.has(el) && !baseline.videoKeys.has(key);
+                return key && !baseline.videoEls.has(el) && !baseline.videoKeys.has(key) && !this.inOverlay(el);
             });
         }
 
@@ -434,7 +410,6 @@
                 () => {
                     this.throwIfFlowError(baseline);
                     if (dom.findAll(this.sel('progressIndicator')).elements.length > baseline.progressCount) return 'progress';
-                    if (kind === 'image' && this.newImages(baseline).length) return 'result';
                     if (kind === 'video' && this.newVideos(baseline).length) return 'result';
                     if (button && (!button.isConnected || !dom.isEnabled(button))) return 'generate-disabled';
                     if (promptSet) {
@@ -452,6 +427,7 @@
             let lastSignature = '';
             let stableSince = 0;
             let lastProgress = '';
+            const revealed = new WeakSet();
             return dom.waitForCondition(
                 () => {
                     this.throwIfFlowError(baseline);
@@ -461,8 +437,18 @@
                         onProgress?.(`progress ${progress}`);
                     }
                     const items = pick();
-                    if (!items.length) return false;
-                    if (items.some((el) => this.progressIn(this.findCard(el)) > 0)) {
+                    if (!items.length) {
+                        // Flow can collapse finished videos behind a "Show N videos" button (inline, not a viewer).
+                        const show = dom.findAll(this.sel('showVideosButton')).elements.find((el) => !revealed.has(el) && !this.inOverlay(el));
+                        if (show) {
+                            revealed.add(show);
+                            this.debug(`Revealing videos: ${dom.describeElement(show)}`);
+                            dom.click(show);
+                        }
+                        return false;
+                    }
+                    // Still generating somewhere on the page (e.g. more clips of this prompt)?
+                    if (dom.findAll(this.sel('progressIndicator')).elements.length > baseline.progressCount || items.some((el) => this.progressIn(this.findCard(el)) > 0)) {
                         stableSince = 0;
                         return false;
                     }
@@ -479,78 +465,56 @@
         }
 
         // ── high-level steps ─────────────────────────────────────────────
-        async generateImage(prompt, { timeoutMs = 300000, elementTimeoutMs = 30000, signal, onProgress } = {}) {
-            await this.ensureImageMode({ signal });
+        /**
+         * The project page the run works on. Every prompt is typed into THIS page's main prompt
+         * box; result viewers (a different URL, or a dialog) are closed before each prompt.
+         */
+        rememberHome() {
+            if (this.homePath) return;
+            const project = location.pathname.match(/^(.*\/project\/[^/?#]+)/);
+            this.homePath = project ? project[1] : location.pathname.replace(/\/$/, '');
+            this.debug(`Working in ${this.homePath}`);
+        }
+
+        isAwayFromHome() {
+            return Boolean(this.homePath) && location.pathname.replace(/\/$/, '') !== this.homePath;
+        }
+
+        openOverlay() {
+            return [...document.querySelectorAll('[role="dialog"],[aria-modal="true"]')].find((el) => dom.isVisible(el)) || null;
+        }
+
+        /** Close any opened result viewer / dialog so we are back at the main prompt box. */
+        async returnToComposer({ signal } = {}) {
+            for (let attempt = 1; attempt <= 4; attempt++) {
+                const overlay = this.openOverlay();
+                const away = this.isAwayFromHome();
+                if (!overlay && !away) return;
+                if (overlay) {
+                    const close = dom.findFirst(this.sel('closeButton'), { root: overlay });
+                    this.debug(`Closing ${close ? dom.describeElement(close) : 'the open viewer (Escape)'} to get back to the main prompt box`);
+                    if (close) dom.click(close);
+                    else for (const target of [document.activeElement || document.body, overlay]) dom.pressKey(target, 'Escape');
+                } else {
+                    this.debug(`On ${location.pathname} — going back to the project page ${this.homePath}`);
+                    history.back();
+                }
+                await dom.sleep(1000, signal);
+            }
+            if (this.openOverlay() || this.isAwayFromHome()) {
+                throw new FlowError("Couldn't get back to the project's main prompt box (a result viewer stayed open). Close it in the Flow tab.", { code: 'UI_NOT_FOUND' });
+            }
+        }
+
+        /** Type the prompt into the main prompt box and submit it. Returns a pending-video token. */
+        async submitPrompt(prompt, { elementTimeoutMs = 30000, signal, onProgress } = {}) {
+            this.rememberHome();
+            await this.returnToComposer({ signal });
             const baseline = this.snapshot();
             await this.setPrompt(prompt, { signal, timeout: elementTimeoutMs });
             onProgress?.('Prompt entered');
-            await this.submit(baseline, { kind: 'image', text: prompt, signal, timeout: elementTimeoutMs });
-            onProgress?.('Image generation started');
-
-            const images = await this.waitForStableMedia(
-                baseline,
-                () => this.newImages(baseline).filter((img) => img.complete && img.naturalWidth > 0),
-                {
-                    timeout: timeoutMs,
-                    signal,
-                    onProgress: (p) => onProgress?.(`Generating image… ${p}`),
-                    message: 'Image generation timed out (no new finished image appeared). Check that Flow is in an image mode — run Flow Diagnostics.'
-                }
-            );
-            if (images.length > 1) this.log('info', `${images.length} new images appeared; using the first one`);
-            const image = images[0];
-            this.debug(`New image: ${dom.describeElement(image)} src=${this.mediaKey(image).slice(0, 80)}`);
-            return { ref: this.register(image, 'image'), count: images.length };
-        }
-
-        async findAnimateControl(image, { signal }) {
-            const card = this.findCard(image);
-            image.scrollIntoView({ block: 'center' });
-            dom.hover(card);
-            dom.hover(image);
-            await dom.sleep(400, signal);
-            let control = dom.findFirst(this.sel('animateButton'), { root: card });
-            if (control) return control;
-
-            // Select the image (some layouts show actions only for the selected item).
-            dom.click(image);
-            await dom.sleep(700, signal);
-            dom.hover(image);
-            control = dom.findFirst(this.sel('animateButton'), { root: card }) || dom.findFirst(this.sel('animateButton'));
-            if (control) return control;
-
-            const more = dom.findFirst(this.sel('cardMoreButton'), { root: card });
-            if (more) {
-                dom.click(more);
-                control = await dom.waitForElement(this.sel('animateMenuItem'), { timeout: 5000, signal }).catch(() => null);
-            }
-            // Controls revealed only by CSS :hover exist in the DOM but can't be made visible by
-            // synthetic events; clicking them directly still runs their handler.
-            return control || dom.findFirst(this.sel('animateButton'), { root: card, visibleOnly: false });
-        }
-
-        async animateImage(imageRef, { prompt = '', elementTimeoutMs = 30000, signal, onProgress } = {}) {
-            const image = this.resolve(imageRef, 'image');
-            const baseline = this.snapshot();
-            const control = await this.findAnimateControl(image, { signal });
-            if (!control) {
-                throw new FlowError('Animate control not found for the generated image (selector "animateButton" may need updating)', { code: 'UI_NOT_FOUND' });
-            }
-            this.debug(`Clicking animate: ${dom.describeElement(control)}`);
-            dom.click(control);
-            onProgress?.('Animate clicked');
-
-            const started = await this.waitForGenerationStart(baseline, { kind: 'video', timeout: 4000, signal }).catch((e) => {
-                if (e.code !== 'TIMEOUT') throw e;
-                return null;
-            });
-            if (!started) {
-                // The image went into the composer as a start frame: submit it.
-                const input = this.findPromptInput();
-                if (input && (prompt || dom.readInputText(input))) await this.setPrompt(prompt, { signal, timeout: elementTimeoutMs });
-                await this.submit(baseline, { kind: 'video', text: prompt, signal, timeout: elementTimeoutMs });
-            }
-            onProgress?.('Video generation started');
+            await this.submit(baseline, { kind: 'video', text: prompt, signal, timeout: elementTimeoutMs });
+            onProgress?.('Generating video…');
             const token = `pv-${++this.seq}`;
             this.pendingVideos.set(token, baseline);
             return { token };
@@ -609,6 +573,8 @@
                 this.debug(`Choosing download option: ${dom.accessibleName(option)}`);
                 dom.click(option);
             }
+            await dom.sleep(300, signal);
+            if (dom.findFirst([{ css: '[role="menu"]' }])) dom.pressKey(document.activeElement || document.body, 'Escape');
             return { clicked: true };
         }
 
@@ -616,13 +582,13 @@
         diagnose() {
             const page = this.detectPage();
             const auth = this.detectAuth();
-            // Hover-only controls live on result cards: probe a few of the first/last image and
-            // video cards (newest may be at either end). Hover only — diagnostics never click.
+            // Hover-only controls live on result cards: probe a few of the first/last video cards
+            // (newest may be at either end). Hover only — diagnostics never click.
             const edge = (list) => [...list.slice(0, 3), ...list.slice(-3)];
-            const cards = [...new Set([...edge(this.collectMedia('generatedVideo')), ...edge(this.collectMedia('generatedImage'))].map((m) => this.findCard(m)))];
+            const cards = [...new Set(edge(this.collectMedia('generatedVideo')).map((m) => this.findCard(m)))];
             cards.forEach((c) => dom.hover(c));
             const items = ns.DIAGNOSTIC_KEYS.map(([key, label]) => {
-                const media = key === 'generatedImage' || key === 'generatedVideo';
+                const media = key === 'generatedVideo';
                 if (key === 'generateButton') {
                     // Report the button a run would actually click (the composer's own).
                     const button = this.findGenerateButton();

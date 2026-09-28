@@ -19,13 +19,6 @@
                     <input type="url" id="flowUrl" required />
                     <small>Opened when no Flow tab exists. Must be on <code>flow.google.com</code> or <code>labs.google/fx</code> (the extension's host permissions).</small>
                 </label>
-                <label>Animation step prompt
-                    <select id="animationPromptMode">
-                        <option value="reuse">Reuse the job's prompt (unchanged)</option>
-                        <option value="empty">Leave the prompt box empty</option>
-                    </select>
-                    <small>Only used if Flow asks for a prompt after "Animate".</small>
-                </label>
             </fieldset>
 
             <fieldset>
@@ -33,7 +26,6 @@
                 <div class="grid">
                     <label>Maximum retries <input type="number" id="maxRetries" min="0" max="10" step="1" /></label>
                     <label>Delay between jobs (seconds) <input type="number" id="delayBetweenJobs" min="0" max="3600" step="1" /></label>
-                    <label>Image generation timeout (minutes) <input type="number" id="imageTimeout" min="0.5" max="60" step="0.5" /></label>
                     <label>Video generation timeout (minutes) <input type="number" id="videoTimeout" min="0.5" max="120" step="0.5" /></label>
                     <label>Download timeout (minutes) <input type="number" id="downloadTimeout" min="0.5" max="60" step="0.5" /></label>
                     <label>Element timeout (seconds) <input type="number" id="elementTimeout" min="1" max="600" step="1" /></label>
@@ -66,7 +58,7 @@
             <fieldset>
                 <legend>Selector overrides (advanced)</legend>
                 <p class="muted">JSON object: <code>{ "selectorKey": [ strategies… ] }</code>. Each key you list replaces the built-in strategies for that key (see <code>src/content/selectors.js</code> and README). Leave empty to use defaults.</p>
-                <textarea id="selectorOverrides" rows="8" spellcheck="false" placeholder='{ "animateButton": [ { "aria": "^Animate$" } ] }'></textarea>
+                <textarea id="selectorOverrides" rows="8" spellcheck="false" placeholder='{ "generateButton": [ { "aria": "^Send$" } ] }'></textarea>
                 <div class="row">
                     <button type="button" id="btnExample" class="btn ghost">Insert example</button>
                     <span id="overrideStatus" class="muted"></span>

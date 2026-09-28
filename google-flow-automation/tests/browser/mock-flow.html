@@ -8,81 +8,60 @@
       (selectors.js, dom-utils.js, flow-adapter.js) in a browser. It is modelled on the
       *assumed* Flow UI — passing here proves the adapter logic works, NOT that the
       selectors match the real Flow. Use Flow Diagnostics on the real site for that.
+
+      Behaviour mirrored from the real site:
+        - a prompt produces a video directly (no image/animate step)
+        - the submit control is an icon-only arrow that ignores script (untrusted) clicks
+        - after the first video, a result viewer opens with ITS OWN prompt box (placed first in
+          the DOM) — prompts must never go there
+        - later results can be collapsed behind an inline "Show 1 Videos" button
     -->
     <style>
         body { font: 14px system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
         main { padding: 16px; display: grid; grid-template-columns: repeat(auto-fill, 280px); gap: 12px; min-height: 60vh; }
         .card { position: relative; width: 280px; height: 200px; background: #222; border-radius: 10px; overflow: hidden; display: grid; place-items: center; }
-        .card img, .card video { width: 100%; height: 100%; object-fit: cover; }
-        .card .actions { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; }
-        .card.hover .actions { display: flex; }
+        .card video { width: 100%; height: 100%; object-fit: cover; }
         .card:hover .css-only { display: flex; }
         .card .css-only { position: absolute; bottom: 6px; right: 6px; display: none; }
-        .composer { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px; background: #1a1a1a; display: flex; gap: 8px; align-items: center; }
+        .composer { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px; background: #1a1a1a; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
         /* Real layout: prompt box on top; below it "+" on the left, then frames, sliders, arrow on the right. */
-        .composer { flex-wrap: wrap; }
         .composer textarea { order: -1; flex: 1 0 100%; height: 48px; }
         .composer #frames { margin-left: auto; }
-        .frame { width: 48px; height: 48px; border-radius: 6px; background-size: cover; display: none; }
         .menu { position: fixed; background: #333; padding: 4px; border-radius: 8px; }
+        .viewer { position: fixed; inset: 40px; background: #000d; border: 1px solid #555; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+        .viewer textarea { height: 48px; }
         button { font: inherit; }
-        .mode { padding: 6px 10px; }
     </style>
 </head>
 <body>
     <header style="padding: 8px 16px">
         <a href="#" aria-label="Google Account" style="color:#9cf">Account</a>
-        <button class="mode" role="combobox" aria-label="Mode: Text to Video" id="mode">Text to Video</button>
         <!-- Decoy: other "Create…" controls exist outside the composer on the real site. -->
         <button id="decoy" aria-label="Create new collection">add</button>
     </header>
     <main id="grid">
-        <div class="card"><img alt="old result" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='200'><rect width='280' height='200' fill='%23444'/></svg>" /></div>
+        <div class="card"><video muted aria-label="old result" src="data:video/mp4;base64,AAAA"></video></div>
     </main>
     <div class="composer">
-        <div class="frame" id="frame"></div>
         <button id="addMedia" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M11 5h2v14h-2zM5 11h14v2H5z" fill="currentColor"/></svg></button>
-        <textarea id="PINHOLE_TEXT_AREA_ELEMENT_ID" placeholder="What do you want to create?"></textarea>
+        <textarea placeholder="What do you want to create?"></textarea>
         <button id="frames" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" fill="currentColor"/></svg></button>
         <button id="settings" class="icon"><svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></button>
-        <!-- Like the real Flow composer: a right-pointing arrow ICON only (SVG, no text, no aria-label),
-             disabled until the prompt registers. -->
+        <!-- Right-pointing arrow ICON only (SVG, no text, no aria-label), disabled until the prompt registers. -->
         <button id="create" class="icon" disabled><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4l-1.4 1.4L16.2 11H4v2h12.2l-5.6 5.6L12 20l8-8z" fill="currentColor"/></svg></button>
     </div>
 
     <script>
         // ---- mock app behaviour -------------------------------------------------
         const grid = document.getElementById('grid');
-        const input = document.getElementById('PINHOLE_TEXT_AREA_ELEMENT_ID');
+        const input = document.querySelector('.composer textarea');
         const createBtn = document.getElementById('create');
-        const modeBtn = document.getElementById('mode');
-        const frame = document.getElementById('frame');
-        window.mock = { submissions: [], mode: 'Text to Video', downloads: [], startFrame: null, failNext: null, decoyClicks: 0, busy: false };
+        window.mock = { submissions: [], viewerSubmissions: [], downloads: [], failNext: null, decoyClicks: 0, ignoredClicks: 0, busy: false, realClick: false, viewerOpened: 0 };
         for (const id of ['decoy', 'addMedia', 'frames', 'settings']) document.getElementById(id).addEventListener('click', () => window.mock.decoyClicks++);
 
         // The app only enables Create once its own state has seen the text (a beat after input).
-        const syncCreate = () => { createBtn.disabled = window.mock.busy || !(input.value.trim() || window.mock.startFrame); };
+        const syncCreate = () => { createBtn.disabled = window.mock.busy || !input.value.trim(); };
         input.addEventListener('input', () => setTimeout(syncCreate, 300));
-
-        modeBtn.addEventListener('click', () => {
-            const menu = document.createElement('div');
-            menu.className = 'menu';
-            menu.style.top = '40px';
-            menu.style.left = '16px';
-            for (const name of ['Text to Video', 'Frames to Video', 'Create Image']) {
-                const opt = document.createElement('div');
-                opt.setAttribute('role', 'option');
-                opt.textContent = name;
-                opt.addEventListener('click', () => {
-                    window.mock.mode = name;
-                    modeBtn.textContent = name;
-                    modeBtn.setAttribute('aria-label', `Mode: ${name}`);
-                    menu.remove();
-                });
-                menu.append(opt);
-            }
-            document.body.append(menu);
-        });
 
         function progressCard() {
             const card = document.createElement('div');
@@ -100,22 +79,6 @@
                 bar.textContent = `${pct}%`;
             }, 250);
             return { card, done: () => (clearInterval(timer), bar.remove()) };
-        }
-
-        function addHover(card) {
-            card.addEventListener('mouseover', () => card.classList.add('hover'));
-            card.addEventListener('mouseleave', () => card.classList.remove('hover'));
-        }
-
-        function imageUrl(text) {
-            const c = document.createElement('canvas');
-            c.width = 280; c.height = 200;
-            const g = c.getContext('2d');
-            g.fillStyle = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
-            g.fillRect(0, 0, 280, 200);
-            g.fillStyle = '#fff';
-            g.fillText(text.slice(0, 40), 10, 100);
-            return c.toDataURL('image/png');
         }
 
         async function videoBlobUrl() {
@@ -140,12 +103,52 @@
             document.body.append(t);
         }
 
+        function addVideo(card, src) {
+            const v = document.createElement('video');
+            v.muted = true;
+            v.src = src;
+            card.append(v);
+            const dl = document.createElement('button');
+            dl.className = 'css-only'; // revealed only by CSS :hover
+            dl.setAttribute('aria-label', 'Download');
+            dl.innerHTML = '<i>download</i>';
+            dl.addEventListener('click', () => {
+                const menu = document.createElement('div');
+                menu.className = 'menu';
+                menu.setAttribute('role', 'menu');
+                menu.style.cssText = 'top:120px;left:120px';
+                const item = document.createElement('div');
+                item.setAttribute('role', 'menuitem');
+                item.textContent = 'Original size (720p)';
+                item.addEventListener('click', () => { window.mock.downloads.push(v.src); menu.remove(); });
+                menu.append(item);
+                document.body.append(menu);
+            });
+            card.append(dl);
+        }
+
+        /** Result viewer with its own prompt box, inserted BEFORE the main composer in the DOM. */
+        function openViewer(src) {
+            window.mock.viewerOpened++;
+            const viewer = document.createElement('div');
+            viewer.className = 'viewer';
+            viewer.setAttribute('role', 'dialog');
+            viewer.setAttribute('aria-modal', 'true');
+            viewer.innerHTML = '<button aria-label="Close">close</button><video muted></video><textarea placeholder="What do you want to create?"></textarea><button class="send"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 4l8 8-8 8" fill="currentColor"/></svg></button>';
+            viewer.querySelector('video').src = src;
+            const ta = viewer.querySelector('textarea');
+            viewer.querySelector('.send').addEventListener('click', () => window.mock.viewerSubmissions.push(ta.value));
+            viewer.querySelector('[aria-label=Close]').addEventListener('click', () => viewer.remove());
+            viewer.addEventListener('keydown', (e) => e.key === 'Escape' && viewer.remove());
+            document.body.prepend(viewer);
+        }
+
         // Like Flow's arrow: script-made clicks (isTrusted=false) are ignored. run-adapter.js stands in
         // for the real debugger click by setting mock.realClick while it clicks at the coordinates.
         createBtn.addEventListener('click', async (event) => {
-            if (!event.isTrusted && !window.mock.realClick) { window.mock.ignoredClicks = (window.mock.ignoredClicks || 0) + 1; return; }
+            if (!event.isTrusted && !window.mock.realClick) { window.mock.ignoredClicks++; return; }
             const prompt = input.value;
-            window.mock.submissions.push({ prompt, mode: window.mock.mode, frame: Boolean(window.mock.startFrame) });
+            const index = window.mock.submissions.push({ prompt }) - 1;
             window.mock.busy = true;
             createBtn.disabled = true;
             input.value = ''; // Flow clears the composer after submitting
@@ -155,55 +158,22 @@
                 setTimeout(() => { done(); card.remove(); toast(msg); window.mock.busy = false; syncCreate(); }, 400);
                 return;
             }
-            const isVideo = Boolean(window.mock.startFrame);
             setTimeout(async () => {
                 done();
-                addHover(card);
-                const actions = document.createElement('div');
-                actions.className = 'actions';
-                if (isVideo) {
-                    const v = document.createElement('video');
-                    v.muted = true;
-                    v.src = await videoBlobUrl();
-                    card.append(v);
-                    const dl = document.createElement('button');
-                    dl.className = 'css-only';                       // revealed only by CSS :hover
-                    dl.setAttribute('aria-label', 'Download');
-                    dl.innerHTML = '<i>download</i>';
-                    dl.addEventListener('click', () => {
-                        const menu = document.createElement('div');
-                        menu.className = 'menu';
-                        menu.style.cssText = 'top:120px;left:120px';
-                        const item = document.createElement('div');
-                        item.setAttribute('role', 'menuitem');
-                        item.textContent = 'Original size (720p)';
-                        item.addEventListener('click', () => { window.mock.downloads.push(v.src); menu.remove(); });
-                        menu.append(item);
-                        document.body.append(menu);
-                    });
-                    card.append(dl);
-                    window.mock.startFrame = null;
-                    frame.style.display = 'none';
+                const src = await videoBlobUrl();
+                if (index === 1) {
+                    // Collapsed result: an inline toggle reveals the clip.
+                    const show = document.createElement('button');
+                    show.textContent = 'Show 1 Videos';
+                    show.addEventListener('click', () => { show.remove(); addVideo(card, src); });
+                    card.append(show);
                 } else {
-                    const img = document.createElement('img');
-                    img.alt = 'generated';
-                    img.src = imageUrl(prompt);
-                    card.append(img);
-                    const animate = document.createElement('button');
-                    animate.setAttribute('aria-label', 'Animate');
-                    animate.innerHTML = '<i>movie</i>';
-                    animate.addEventListener('click', () => {
-                        window.mock.startFrame = img.src; // image becomes start frame; user must submit
-                        frame.style.backgroundImage = `url(${img.src})`;
-                        frame.style.display = 'block';
-                        syncCreate();
-                    });
-                    actions.append(animate);
+                    addVideo(card, src);
                 }
-                card.append(actions);
                 window.mock.busy = false;
                 syncCreate();
-            }, isVideo ? 1500 : 1200);
+                if (index === 0) setTimeout(() => openViewer(src), 100); // Flow opens the new result
+            }, 1500);
         });
     </script>
 

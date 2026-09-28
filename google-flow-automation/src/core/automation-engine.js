@@ -35,16 +35,15 @@ export const AUTH_MESSAGE =
 /**
  * Central state machine. Talks to Google Flow ONLY through `adapter`, which must implement:
  *   checkReady()                          -> { ready, authenticated, projectOpen?, reason? }
- *   generateImage(prompt, opts)           -> imageRef
- *   animateImage(imageRef, opts)          -> pendingVideoRef
+ *   submitPrompt(prompt, opts)            -> pendingVideoRef  (types into the project's main prompt box)
  *   waitForVideo(pendingVideoRef, opts)   -> videoRef
  *   getVideoDownloadInfo(videoRef, opts)  -> { url, mimeHint? }
  *   triggerNativeDownload(videoRef, opts) -> void   (clicks Flow's own download button)
  *   abort()                               -> void
  * (see tests/mocks/mock-flow-adapter.js and src/background/remote-flow-adapter.js)
  *
- *   PENDING -> GENERATING_IMAGE -> IMAGE_READY -> ANIMATING -> GENERATING_VIDEO
- *           -> VIDEO_READY -> DOWNLOADING -> COMPLETED -> next job
+ *   PENDING -> GENERATING_VIDEO -> VIDEO_READY -> DOWNLOADING -> COMPLETED -> next job
+ *   (one prompt at a time: the next prompt is only typed after this one's video is downloaded)
  *   any state -> error -> retry (up to maxRetries) -> FAILED -> next job
  */
 export class FlowAutomationEngine {
@@ -357,12 +356,9 @@ export class FlowAutomationEngine {
 
         this.logger.info(`Job ${n} started`);
         this.emit('JOB_STARTED', { number: n });
-        await this.setJobStatus(n, JOB_STATUS.GENERATING_IMAGE, { startedAt: Date.now(), error: null });
+        await this.setJobStatus(n, JOB_STATUS.GENERATING_VIDEO, { startedAt: Date.now(), error: null });
 
-        const image = await this.generateImage(job);
-        await this.setJobStatus(n, JOB_STATUS.IMAGE_READY);
-
-        const pendingVideo = await this.animateImage(job, image);
+        const pendingVideo = await this.submitPrompt(job);
         const video = await this.waitForVideo(job, pendingVideo);
         await this.setJobStatus(n, JOB_STATUS.VIDEO_READY);
 
@@ -373,31 +369,15 @@ export class FlowAutomationEngine {
         this.emit('JOB_COMPLETED', { number: n, outputFile: result.filename });
     }
 
-    async generateImage(job) {
+    async submitPrompt(job) {
         const settings = this.getSettings();
-        this.logger.info(`Job ${job.number}: entering prompt and generating image`);
-        const image = await this.adapter.generateImage(job.prompt, {
-            signal: this.abortController?.signal,
-            timeoutMs: settings.imageGenerationTimeoutMs,
-            elementTimeoutMs: settings.elementTimeoutMs,
-            onProgress: (detail) => this.progress(job.number, detail)
-        });
-        if (!image) throw new Error('Generated image not found');
-        this.logger.info(`Job ${job.number}: image generation completed`);
-        return image;
-    }
-
-    async animateImage(job, image) {
-        const settings = this.getSettings();
-        await this.setJobStatus(job.number, JOB_STATUS.ANIMATING);
-        this.logger.info(`Job ${job.number}: animation started`);
-        const pending = await this.adapter.animateImage(image, {
-            prompt: settings.animationPromptMode === 'reuse' ? job.prompt : '',
+        this.logger.info(`Job ${job.number}: entering prompt in the main prompt box`);
+        const pending = await this.adapter.submitPrompt(job.prompt, {
             signal: this.abortController?.signal,
             elementTimeoutMs: settings.elementTimeoutMs,
             onProgress: (detail) => this.progress(job.number, detail)
         });
-        await this.setJobStatus(job.number, JOB_STATUS.GENERATING_VIDEO);
+        this.logger.info(`Job ${job.number}: video generation started`);
         return pending;
     }
 

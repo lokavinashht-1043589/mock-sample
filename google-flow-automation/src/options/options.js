@@ -5,7 +5,7 @@ const $ = (id) => document.getElementById(id);
 
 const EXAMPLE_OVERRIDES = {
     promptInput: [{ css: 'textarea[placeholder*="prompt" i]' }],
-    animateButton: [{ aria: '^Animate$' }, { text: '^\\s*Animate\\s*$', tag: 'button' }],
+    generateButton: [{ aria: '^Send$' }],
     downloadMenuOption: [{ role: 'menuitem', name: 'Original size' }]
 };
 
@@ -14,10 +14,8 @@ const SEC = 1000;
 
 function fill(s) {
     $('flowUrl').value = s.flowUrl;
-    $('animationPromptMode').value = s.animationPromptMode;
     $('maxRetries').value = s.maxRetries;
     $('delayBetweenJobs').value = s.delayBetweenJobsMs / SEC;
-    $('imageTimeout').value = s.imageGenerationTimeoutMs / MIN;
     $('videoTimeout').value = s.videoGenerationTimeoutMs / MIN;
     $('downloadTimeout').value = s.downloadTimeoutMs / MIN;
     $('elementTimeout').value = s.elementTimeoutMs / SEC;
@@ -34,10 +32,8 @@ function fill(s) {
 function read() {
     return normalizeSettings({
         flowUrl: $('flowUrl').value,
-        animationPromptMode: $('animationPromptMode').value,
         maxRetries: $('maxRetries').value,
         delayBetweenJobsMs: Number($('delayBetweenJobs').value) * SEC,
-        imageGenerationTimeoutMs: Number($('imageTimeout').value) * MIN,
         videoGenerationTimeoutMs: Number($('videoTimeout').value) * MIN,
         downloadTimeoutMs: Number($('downloadTimeout').value) * MIN,
         elementTimeoutMs: Number($('elementTimeout').value) * SEC,
